@@ -8,6 +8,7 @@ docx-rs = "0.4"
 genpdf = "0.2"
 rubato = "4.0"
 symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
+symphonia-adapter-libopus = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 zip = "2"

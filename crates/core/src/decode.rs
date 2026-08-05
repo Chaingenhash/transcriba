@@ -5,7 +5,9 @@
 use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::{Fft, FixedSync, Resampler};
 use std::path::Path;
+use std::sync::OnceLock;
 use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, TrackType};
@@ -13,6 +15,20 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
 pub const TARGET_RATE: u32 = 16_000;
+
+/// The codec registry symphonia's own `default::get_codecs()` returns is fixed at build time
+/// from Cargo feature flags and cannot be mutated, so Opus support — provided by
+/// `symphonia-adapter-libopus` rather than a native symphonia codec — needs a registry of our
+/// own. Built once and reused, since constructing a registry per decode call would be wasteful.
+fn codecs() -> &'static CodecRegistry {
+    static REGISTRY: OnceLock<CodecRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut registry = CodecRegistry::new();
+        symphonia::default::register_enabled_codecs(&mut registry);
+        registry.register_audio_decoder::<symphonia_adapter_libopus::OpusDecoder>();
+        registry
+    })
+}
 
 #[derive(Debug)]
 pub struct Audio {
@@ -59,7 +75,7 @@ impl std::error::Error for DecodeError {}
 /// other reason) and falling back to the raw codec identifier when the codec isn't registered
 /// at all — which is the common case for a genuinely unsupported codec.
 fn codec_name(codec: symphonia::core::codecs::audio::AudioCodecId) -> String {
-    match symphonia::default::get_codecs().get_audio_decoder(codec) {
+    match codecs().get_audio_decoder(codec) {
         Some(registered) => registered.codec.info.short_name.to_string(),
         None => format!("{codec:?}"),
     }
@@ -101,7 +117,7 @@ pub fn decode(path: &Path) -> Result<Audio, DecodeError> {
         .map_or(1, |c| c.count())
         .max(1);
 
-    let mut decoder = symphonia::default::get_codecs()
+    let mut decoder = codecs()
         .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
         .map_err(|_| DecodeError::UnsupportedCodec(codec_name(audio_params.codec)))?;
 
@@ -228,6 +244,20 @@ mod tests {
     #[test]
     fn samples_are_within_valid_range() {
         let audio = decode(&fixture("tone.wav")).unwrap();
+        assert!(audio
+            .samples
+            .iter()
+            .all(|s| s.is_finite() && s.abs() <= 1.01));
+    }
+
+    #[test]
+    fn decodes_opus() {
+        let audio = decode(&fixture("tone.opus")).expect("decodes opus");
+        assert!(
+            (audio.duration - 2.0).abs() < 0.2,
+            "duration was {}",
+            audio.duration
+        );
         assert!(audio
             .samples
             .iter()
