@@ -7,6 +7,8 @@ edition.workspace = true
 docx-rs = "0.4"
 genpdf = "0.2"
 rubato = "4.0"
+ureq = "3"
+dirs = "6"
 symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
 # default-features = false drops the "bundled" feature, which vendors and statically links
 # libopus but needs `cmake` at build time. Without it, this dynamically links whatever

@@ -8,6 +8,7 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod decode;
+pub mod model_store;
 pub mod reflow;
 pub mod render;
 
