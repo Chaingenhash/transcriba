@@ -75,7 +75,7 @@ requires the others to be tested.
 |---|---|---|
 | Transcribe | `whisper-rs` 0.16 | Static-links whisper.cpp. Exposes whisper's progress callback. Has Windows build instructions. |
 | Decode | `symphonia` | MP3, M4A/MP4, WAV, FLAC, OGG/Vorbis. **Not Opus.** |
-| Opus decode | `audiopus` | libopus bindings. Needed because WhatsApp voice notes are often Opus. |
+| Opus decode | `symphonia-adapter-libopus` | Registers libopus as a codec inside symphonia. Revised 2026-08-05 from `audiopus`, whose only release is a pre-release, and which would have needed a separate Ogg parser. |
 | Resample | `rubato` | 48kHz → 16kHz. Replaces the `ffmpeg` step. |
 | DOCX | `docx-rs` | Writer only, which is all that is needed. |
 | PDF | `genpdf` | Pure Rust, layout over `printpdf`. See risks. |
@@ -222,7 +222,14 @@ Items to resolve during implementation rather than design:
    If typography matters more later, `typst` embedded as a library is the upgrade path.
 3. **Vulkan on Windows.** Expected to fail per the issue above. Verify empirically; ship
    Windows CPU-only if confirmed.
-4. **Colleague hardware.** 0.25× realtime was measured on a Core Ultra 7 with 14 threads.
+4. **libopus linkage on Windows.** Opus support goes through `symphonia-adapter-libopus`,
+   which needs libopus at build time. The development machine has it (1.6.1) so Linux CI is
+   fine, but the Windows runner arrives only in Plan 2 and must solve linkage there —
+   `vcpkg install opus:x64-windows-static`, or a `-sys` crate that vendors and statically
+   links it as `audiopus_sys` reportedly does on Windows. Deferred deliberately, with the
+   human partner's agreement; it is a Plan 2 blocker, not a Plan 1 one.
+
+5. **Colleague hardware.** 0.25× realtime was measured on a Core Ultra 7 with 14 threads.
    An older laptop at 0.8× realtime turns a 90-minute recording into a 72-minute wait.
    Measure on a real colleague machine early — it may justify offering a smaller model as
    a "faster, less accurate" option.
