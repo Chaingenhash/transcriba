@@ -24,6 +24,10 @@ pub struct Audio {
 pub enum DecodeError {
     Open(String),
     UnsupportedCodec(String),
+    /// The container/format itself wasn't recognised at all (no codec to name — probing never
+    /// got far enough to find one). Distinct from `UnsupportedCodec`, where the container is
+    /// understood but the codec inside it isn't.
+    UnsupportedFormat(String),
     Empty,
     Decode(String),
 }
@@ -37,6 +41,11 @@ impl std::fmt::Display for DecodeError {
                 "this file uses {c} audio, which isn't supported yet. \
 Convert it to MP3 and try again."
             ),
+            DecodeError::UnsupportedFormat(m) => write!(
+                f,
+                "the file's format could not be recognized ({m}). \
+Convert it to MP3 and try again."
+            ),
             DecodeError::Empty => write!(f, "the file contains no audio"),
             DecodeError::Decode(m) => write!(f, "the audio could not be decoded: {m}"),
         }
@@ -44,6 +53,17 @@ Convert it to MP3 and try again."
 }
 
 impl std::error::Error for DecodeError {}
+
+/// Returns a human-readable name for `codec`, preferring the codec registry's own short name
+/// (available when the codec is registered but decoder construction still failed for some
+/// other reason) and falling back to the raw codec identifier when the codec isn't registered
+/// at all — which is the common case for a genuinely unsupported codec.
+fn codec_name(codec: symphonia::core::codecs::audio::AudioCodecId) -> String {
+    match symphonia::default::get_codecs().get_audio_decoder(codec) {
+        Some(registered) => registered.codec.info.short_name.to_string(),
+        None => format!("{codec:?}"),
+    }
+}
 
 /// Decodes `path` to mono `f32` samples at [`TARGET_RATE`].
 pub fn decode(path: &Path) -> Result<Audio, DecodeError> {
@@ -62,7 +82,7 @@ pub fn decode(path: &Path) -> Result<Audio, DecodeError> {
             FormatOptions::default(),
             MetadataOptions::default(),
         )
-        .map_err(|e| DecodeError::UnsupportedCodec(e.to_string()))?;
+        .map_err(|e| DecodeError::UnsupportedFormat(e.to_string()))?;
 
     let track = format
         .default_track(TrackType::Audio)
@@ -83,7 +103,7 @@ pub fn decode(path: &Path) -> Result<Audio, DecodeError> {
 
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
-        .map_err(|e| DecodeError::UnsupportedCodec(e.to_string()))?;
+        .map_err(|_| DecodeError::UnsupportedCodec(codec_name(audio_params.codec)))?;
 
     // Downmixed mono samples, averaged across channels rather than picking one.
     let mut mono = Vec::new();
@@ -96,7 +116,17 @@ pub fn decode(path: &Path) -> Result<Audio, DecodeError> {
             // `next_packet` returns `Ok(None)` at end of stream in symphonia 0.6 (not an
             // IO error as in older versions) — this is normal termination, not a failure.
             Ok(None) => break,
-            Err(SymphoniaError::ResetRequired) => break,
+            // `ResetRequired` means the track list changed and there is *more* audio to
+            // decode, not that the stream ended — treating it like end-of-stream would
+            // silently truncate the transcript with no indication anything was lost.
+            // Re-creating the decoder and continuing is a larger change; fail loudly instead.
+            Err(SymphoniaError::ResetRequired) => {
+                return Err(DecodeError::Decode(
+                    "the file's stream structure changed partway through decoding, \
+which isn't supported"
+                        .to_string(),
+                ));
+            }
             Err(e) => return Err(DecodeError::Decode(e.to_string())),
         };
         if packet.track_id != track_id {
@@ -210,5 +240,18 @@ mod tests {
             decode(Path::new("/nonexistent.mp3")),
             Err(DecodeError::Open(_))
         ));
+    }
+
+    #[test]
+    fn unsupported_codec_message_names_the_codec_without_library_noise() {
+        let message = DecodeError::UnsupportedCodec("AAC".to_string()).to_string();
+        assert!(
+            message.contains("AAC"),
+            "message should name the codec: {message}"
+        );
+        assert!(
+            !message.contains("core (codec)"),
+            "message should not leak raw library error text: {message}"
+        );
     }
 }
