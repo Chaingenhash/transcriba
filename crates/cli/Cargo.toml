@@ -1,0 +1,11 @@
+[package]
+name = "transcriba-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "transcriba"
+path = "src/main.rs"
+
+[dependencies]
+transcriba-core = { path = "../core" }
