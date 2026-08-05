@@ -212,9 +212,11 @@ the company depends on, revisit — IT may already hold a certificate.
 
 Items to resolve during implementation rather than design:
 
-1. **Cancellation.** A Cancel button must actually stop work. Recent whisper.cpp has an
-   abort callback, but it is unverified whether `whisper-rs` 0.16 exposes it. Fallback is
-   checking a flag between segments — coarser, but it stops within a segment or two.
+1. ~~**Cancellation.**~~ **Resolved 2026-08-05:** `whisper-rs` exposes both
+   `WhisperProgressCallback` and `WhisperAbortCallback`, so Cancel can abort mid-run rather
+   than waiting for a segment boundary. The remaining wrinkle is a borrow-checker one — the
+   callbacks likely need `Arc<AtomicBool>` for cancellation and `Arc<Mutex<..>>` for
+   progress rather than borrowed closures, which is the shape the GUI needs anyway.
 2. **`genpdf` maintenance.** At 0.1.1 with the original repository dormant and several
    forks circulating. Adequate for headings and paragraphs, which is all a transcript is.
    If typography matters more later, `typst` embedded as a library is the upgrade path.
