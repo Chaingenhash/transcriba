@@ -8,6 +8,7 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod reflow;
+pub mod render;
 
 #[cfg(test)]
 mod tests {
