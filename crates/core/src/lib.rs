@@ -7,6 +7,7 @@
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod decode;
 pub mod reflow;
 pub mod render;
 
