@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 docx-rs = "0.4"
+genpdf = "0.2"
 
 [dev-dependencies]
 zip = "2"
+pdf-extract = "0.12"

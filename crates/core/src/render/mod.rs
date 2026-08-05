@@ -1,4 +1,5 @@
 pub mod docx;
+pub mod pdf;
 
 /// Metadata rendered into the document header.
 #[derive(Debug, Clone)]
