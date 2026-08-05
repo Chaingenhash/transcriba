@@ -46,8 +46,9 @@ fn to_sentences(cues: &[Cue]) -> Vec<Sentence> {
             start = Some(cue.start);
         }
         end = cue.end;
-        buf.push(cue.text.trim());
-        if closes_sentence(&cue.text) {
+        let trimmed = cue.text.trim();
+        buf.push(trimmed);
+        if closes_sentence(trimmed) {
             out.push(Sentence {
                 start: start.take().unwrap(),
                 end,
@@ -211,6 +212,20 @@ mod tests {
     fn formats_timestamps_with_and_without_hours() {
         assert_eq!(format_timestamp(65.0), "1:05");
         assert_eq!(format_timestamp(3725.0), "1:02:05");
+    }
+
+    #[test]
+    fn closes_sentence_with_terminator_followed_by_trailing_whitespace() {
+        // Regression test: cue text from Whisper commonly has trailing whitespace
+        // after sentence terminators. Bug: closing was checked on untrimmed text,
+        // so "Primeira frase. " failed to close, merging with the next paragraph
+        // even across long pauses. Fix checks closure on the same trimmed value.
+        let cues = vec![
+            cue(0.0, 1.0, "Primeira frase. "),
+            cue(3.0, 4.0, "Segunda frase."),
+        ];
+        let paras = para_texts(&reflow(&cues));
+        assert_eq!(paras.len(), 2);
     }
 
     fn para_texts(blocks: &[Block]) -> Vec<String> {
