@@ -20,6 +20,10 @@ pub const TARGET_RATE: u32 = 16_000;
 /// from Cargo feature flags and cannot be mutated, so Opus support — provided by
 /// `symphonia-adapter-libopus` rather than a native symphonia codec — needs a registry of our
 /// own. Built once and reused, since constructing a registry per decode call would be wasteful.
+///
+/// `symphonia-adapter-libopus` is configured with `default-features = false` in Cargo.toml
+/// (see the comment there), which makes the libopus registered here link dynamically against
+/// whatever `libopus` is present on this machine rather than a statically-bundled copy.
 fn codecs() -> &'static CodecRegistry {
     static REGISTRY: OnceLock<CodecRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {

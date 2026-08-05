@@ -8,6 +8,11 @@ docx-rs = "0.4"
 genpdf = "0.2"
 rubato = "4.0"
 symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
+# default-features = false drops the "bundled" feature, which vendors and statically links
+# libopus but needs `cmake` at build time. Without it, this dynamically links whatever
+# `libopus` is installed on the build/run machine instead — an availability workaround, not
+# a preference. Linux CI therefore needs a libopus development package (e.g. libopus-dev)
+# present, or this dependency will fail to link.
 symphonia-adapter-libopus = { version = "0.3", default-features = false }
 
 [dev-dependencies]
