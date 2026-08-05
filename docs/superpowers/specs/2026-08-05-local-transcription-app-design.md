@@ -222,12 +222,22 @@ Items to resolve during implementation rather than design:
    If typography matters more later, `typst` embedded as a library is the upgrade path.
 3. **Vulkan on Windows.** Expected to fail per the issue above. Verify empirically; ship
    Windows CPU-only if confirmed.
-4. **libopus linkage on Windows.** Opus support goes through `symphonia-adapter-libopus`,
-   which needs libopus at build time. The development machine has it (1.6.1) so Linux CI is
-   fine, but the Windows runner arrives only in Plan 2 and must solve linkage there —
-   `vcpkg install opus:x64-windows-static`, or a `-sys` crate that vendors and statically
-   links it as `audiopus_sys` reportedly does on Windows. Deferred deliberately, with the
-   human partner's agreement; it is a Plan 2 blocker, not a Plan 1 one.
+4. **libopus linkage — dynamic today, must become static for distribution.**
+   `symphonia-adapter-libopus` is depended on with `default-features = false`, which disables
+   its `bundled` feature. That feature vendors libopus and links it statically, but requires
+   `cmake` at build time, which is not installed on the development machine. The current
+   configuration therefore **dynamically links the system libopus**.
+
+   For Plan 1 (a library plus a developer CLI) that is fine. For Plan 2 it is not: an
+   installer handed to a non-technical colleague cannot assume libopus is present on their
+   machine. Plan 2 must either enable `bundled` — which means installing `cmake` locally and
+   adding it to CI — or bundle the shared library into the AppImage and Windows installer.
+   On Windows, `vcpkg install opus:x64-windows-static` is the documented route, and
+   `audiopus_sys` reportedly static-links there by default.
+
+   Linux CI already needs a libopus development package; the plan's CI step installs
+   `libopus-dev`. Deferred deliberately with the human partner's agreement: a Plan 2 blocker,
+   not a Plan 1 one.
 
 5. **Colleague hardware.** 0.25× realtime was measured on a Core Ultra 7 with 14 threads.
    An older laptop at 0.8× realtime turns a 90-minute recording into a 72-minute wait.
