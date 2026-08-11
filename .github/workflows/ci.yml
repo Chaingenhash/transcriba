@@ -8,15 +8,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
       - name: Install audio fixtures toolchain
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg libopus-dev
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libopus-dev cmake libclang-dev
       - name: Fetch tiny model for integration tests
         run: |
           mkdir -p tests/fixtures
-          curl -sL -o tests/fixtures/ggml-tiny.bin \
+          curl -fsL -o tests/fixtures/ggml-tiny.bin \
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin?download=true"
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
         env:
           TRANSCRIBA_TEST_MODEL: ${{ github.workspace }}/tests/fixtures/ggml-tiny.bin
