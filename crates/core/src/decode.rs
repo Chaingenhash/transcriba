@@ -114,12 +114,6 @@ pub fn decode(path: &Path) -> Result<Audio, DecodeError> {
         .and_then(|p| p.audio())
         .ok_or(DecodeError::Empty)?
         .clone();
-    let source_rate = audio_params.sample_rate.unwrap_or(TARGET_RATE);
-    let channels = audio_params
-        .channels
-        .as_ref()
-        .map_or(1, |c| c.count())
-        .max(1);
 
     let mut decoder = codecs()
         .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
@@ -129,6 +123,18 @@ pub fn decode(path: &Path) -> Result<Audio, DecodeError> {
     let mut mono = Vec::new();
     // Scratch buffer reused across packets to avoid reallocating every iteration.
     let mut interleaved = Vec::new();
+    // The container's own declared rate/channel count is advisory only — some
+    // containers omit it. The first decoded buffer's spec is authoritative (it's
+    // what the decoder itself actually produced), so channel count and sample
+    // rate are read from there rather than trusted from `audio_params` up front.
+    // Guessing either one silently corrupts the output: a wrong rate skips
+    // resampling that was actually needed, and a wrong channel count makes
+    // `chunks(channels)` slice interleaved stereo as if it were twice as much
+    // mono audio, both while still reporting success.
+    let mut source_rate: Option<u32> = None;
+    let mut channels: Option<usize> = None;
+    let mut decoded_packets = 0u64;
+    let mut failed_packets = 0u64;
 
     loop {
         let packet = match format.next_packet() {
@@ -155,22 +161,62 @@ which isn't supported"
 
         match decoder.decode(&packet) {
             Ok(audio_buf) => {
-                let frames = audio_buf.samples_interleaved() / channels;
+                decoded_packets += 1;
+                // Only the first buffer's spec is consulted: the stream is assumed to
+                // have a single, consistent rate/channel layout throughout (a change
+                // partway through would surface as `ResetRequired`, handled above).
+                if source_rate.is_none() {
+                    let rate = audio_buf.spec().rate();
+                    if rate == 0 {
+                        return Err(DecodeError::Decode(
+                            "the decoded stream did not declare a sample rate".to_string(),
+                        ));
+                    }
+                    source_rate = Some(rate);
+                }
+                if channels.is_none() {
+                    let count = audio_buf.spec().channels().count();
+                    if count == 0 {
+                        return Err(DecodeError::Decode(
+                            "the decoded stream did not declare a channel count".to_string(),
+                        ));
+                    }
+                    channels = Some(count);
+                }
+                let channels = channels.expect("just populated above if it was None");
+
+                let frames = audio_buf.frames();
                 interleaved.resize(frames * channels, 0.0f32);
                 audio_buf.copy_to_slice_interleaved(interleaved.as_mut_slice());
                 for frame in interleaved.chunks(channels) {
                     mono.push(frame.iter().sum::<f32>() / channels as f32);
                 }
             }
-            // A single malformed or truncated packet shouldn't abort the whole decode.
-            Err(SymphoniaError::DecodeError(_)) | Err(SymphoniaError::IoError(_)) => continue,
+            // A single malformed or truncated packet shouldn't abort the whole decode,
+            // but a stream that's mostly failing packets shouldn't quietly report a
+            // fraction of the audio as a complete success either (checked below).
+            Err(SymphoniaError::DecodeError(_)) => {
+                failed_packets += 1;
+                continue;
+            }
             Err(e) => return Err(DecodeError::Decode(e.to_string())),
         }
+    }
+
+    let total_packets = decoded_packets + failed_packets;
+    if total_packets > 0 && failed_packets * 10 > total_packets {
+        return Err(DecodeError::Decode(format!(
+            "{failed_packets} of {total_packets} packets failed to decode"
+        )));
     }
 
     if mono.is_empty() {
         return Err(DecodeError::Empty);
     }
+
+    let source_rate = source_rate.ok_or_else(|| {
+        DecodeError::Decode("the decoded stream did not declare a sample rate".to_string())
+    })?;
 
     let samples = if source_rate == TARGET_RATE {
         mono
