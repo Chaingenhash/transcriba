@@ -15,10 +15,6 @@ pub struct Options {
     pub model_path: PathBuf,
 }
 
-/// Marker returned when a caller-requested cancellation is honoured.
-#[derive(Debug)]
-pub struct Cancelled;
-
 #[derive(Debug)]
 pub enum TranscribeError {
     Model(String),
@@ -116,9 +112,34 @@ pub fn transcribe(
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let progress_value = Arc::new(AtomicI32::new(0));
 
-    {
-        let cancel_flag = Arc::clone(&cancel_flag);
-        params.set_abort_callback_safe(move || cancel_flag.load(Ordering::Relaxed));
+    // Deliberately NOT `set_abort_callback_safe`: whisper-rs 0.16.0 has a
+    // type-erasure bug there. It instantiates its generic trampoline as
+    // `trampoline::<F>` — the caller's own closure type — over data that was
+    // actually boxed as `Box<dyn FnMut() -> bool>` (whisper_params.rs:645).
+    // Contrast with `set_progress_callback_safe` just above it in the same
+    // file, which correctly hardcodes `trampoline::<Box<dyn FnMut(i32)>>`
+    // (whisper_params.rs:597) to match what it actually stores. In practice
+    // this means the abort callback silently never fires: verified
+    // empirically that a run taking 1.29s to finish still returned `Ok(())`
+    // from `full()`, despite `cancel_flag` having already been `true` for
+    // the entire 1.29s (set at the 48-microsecond mark). Using the raw,
+    // unsafe callback API instead sidesteps the bug entirely: there is no
+    // closure to type-erase, just a raw pointer to our own `AtomicBool`,
+    // read back as the exact same type on both ends.
+    unsafe extern "C" fn abort_if_cancelled(user_data: *mut std::ffi::c_void) -> bool {
+        // SAFETY: `user_data` is set immediately below from `Arc::as_ptr` on
+        // `cancel_flag`, which is held alive on this function's stack for
+        // the entire duration of the `thread::scope` block below, which is
+        // the only place this callback can be invoked (synchronously, on
+        // the worker thread, inside `state.full`).
+        unsafe { &*(user_data as *const AtomicBool) }.load(Ordering::Relaxed)
+    }
+    // SAFETY: `abort_if_cancelled` matches `WhisperAbortCallback`'s
+    // signature exactly, and the user data pointer it receives is read back
+    // as the same `AtomicBool` type it was cast from.
+    unsafe {
+        params.set_abort_callback(Some(abort_if_cancelled));
+        params.set_abort_callback_user_data(Arc::as_ptr(&cancel_flag) as *mut std::ffi::c_void);
     }
     {
         let progress_value = Arc::clone(&progress_value);
@@ -127,7 +148,7 @@ pub fn transcribe(
         });
     }
 
-    let run_result = std::thread::scope(|scope| {
+    let run_result: Result<(), TranscribeError> = std::thread::scope(|scope| {
         let handle = scope.spawn(|| state.full(params, &audio.samples));
 
         let mut last_reported = -1;
@@ -148,14 +169,28 @@ pub fn transcribe(
             on_progress(final_progress);
         }
 
-        handle.join().expect("whisper worker thread panicked")
+        match handle.join() {
+            Ok(full_result) => full_result.map_err(|e| TranscribeError::Run(e.to_string())),
+            // A panic across the FFI boundary (OOM, a malformed model, etc.)
+            // must not take down the caller's thread; surface it as a typed
+            // error instead.
+            Err(_) => Err(TranscribeError::Run(
+                "the transcription worker thread panicked".to_string(),
+            )),
+        }
     });
 
-    run_result.map_err(|e| TranscribeError::Run(e.to_string()))?;
-
+    // Checked before `run_result`: when the abort callback returns `true`
+    // mid-run, whisper.cpp's whisper_encode_internal/whisper_decode_internal
+    // return `false`, which makes `whisper_full_with_state` return a nonzero
+    // code (-6/-8/-9) that whisper-rs's `full()` does not special-case, so it
+    // surfaces as `Err(WhisperError::GenericError(_))` — indistinguishable
+    // from a genuine failure unless cancellation is checked first. A cancelled
+    // run is not a `Run` failure even though `full()` returned an `Err`.
     if cancel_flag.load(Ordering::Relaxed) {
         return Err(TranscribeError::Cancelled);
     }
+    run_result?;
 
     let mut cues = Vec::new();
     for segment in state.as_iter() {
@@ -189,6 +224,48 @@ mod tests {
     fn silence(seconds: f64) -> Audio {
         Audio {
             samples: vec![0.0; (seconds * crate::decode::TARGET_RATE as f64) as usize],
+            duration: seconds,
+        }
+    }
+
+    /// An audible tone, well above the digital-silence threshold, so it
+    /// reaches the real decode path instead of being short-circuited.
+    fn tone(seconds: f64, amplitude: f32) -> Audio {
+        let rate = crate::decode::TARGET_RATE as f64;
+        let n = (seconds * rate) as usize;
+        let samples = (0..n)
+            .map(|i| {
+                amplitude * (2.0 * std::f64::consts::PI * 440.0 * i as f64 / rate).sin() as f32
+            })
+            .collect();
+        Audio {
+            samples,
+            duration: seconds,
+        }
+    }
+
+    /// Deterministic noise, loud enough to clear the silence gate. A pure
+    /// tone gets bailed out of almost immediately by whisper's own
+    /// low-information heuristics ("skip entire chunk"), finishing before a
+    /// cancellation request has any chance to land mid-decode; noise keeps
+    /// the decoder busy across many tokens for long enough that a
+    /// mid-run `should_cancel` reliably arrives while `full()` is still
+    /// running, not after it has already returned.
+    fn noise(seconds: f64, amplitude: f32) -> Audio {
+        let n = (seconds * crate::decode::TARGET_RATE as f64) as usize;
+        let mut state: u32 = 0x2545_F491;
+        let samples = (0..n)
+            .map(|_| {
+                // xorshift32
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let unit = (state as f32) / (u32::MAX as f32); // [0, 1]
+                amplitude * (unit * 2.0 - 1.0)
+            })
+            .collect();
+        Audio {
+            samples,
             duration: seconds,
         }
     }
@@ -229,6 +306,37 @@ mod tests {
         };
         let err = transcribe(&silence(2.0), &opts, &mut |_| {}, &|| true);
         assert!(matches!(err, Err(TranscribeError::Cancelled)));
+    }
+
+    #[test]
+    fn cancellation_mid_run_returns_cancelled() {
+        let Some(opts) = tiny_model_opts() else {
+            return;
+        };
+        // `should_cancel` must answer `false` on the very first call (the
+        // top-of-function guard, before the worker starts) and `true` on
+        // every call after — deterministically, not by racing a timer
+        // against however long this particular decode happens to take.
+        // The second call happens the instant the polling loop first runs,
+        // immediately after the worker thread is spawned and while `full()`
+        // is still genuinely in flight (noise input, unlike a pure tone,
+        // keeps ggml-tiny decoding across multiple temperature retries for
+        // over a second, giving ample room for the abort to land before
+        // natural completion).
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_count_reader = Arc::clone(&call_count);
+        let should_cancel = move || call_count_reader.fetch_add(1, Ordering::Relaxed) > 0;
+
+        let err = transcribe(&noise(5.0, 0.1), &opts, &mut |_| {}, &should_cancel);
+        assert!(matches!(err, Err(TranscribeError::Cancelled)));
+    }
+
+    #[test]
+    fn is_digital_silence_does_not_flag_quiet_real_signal() {
+        // RMS is roughly amplitude/sqrt(2) =~ 7e-3: comfortably above the
+        // 1e-4 threshold, but still clearly a quiet signal, not silence.
+        let quiet = tone(0.5, 0.01);
+        assert!(!is_digital_silence(&quiet.samples));
     }
 
     #[test]
