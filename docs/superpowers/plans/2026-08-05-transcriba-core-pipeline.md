@@ -1059,110 +1059,94 @@ git commit -m "feat(core): decode and resample audio to 16kHz mono"
 
 ### Task 6: Opus support
 
-Separable from Task 5 and independently rejectable: WhatsApp voice notes are frequently Opus, and Symphonia's Opus codec is not production-ready. `whisper-rs` already requires a C toolchain, so libopus bindings add no new class of dependency.
+Separable from Task 5 and independently rejectable. WhatsApp voice notes are frequently Opus, and symphonia 0.6 ships no Opus codec — it recognises the codec ID but cannot decode it, so an Opus file today fails with `this file uses AudioCodecId(4097) audio, which isn't supported yet.`
+
+**Revised 2026-08-05, after investigation.** This task originally specified `audiopus` plus the `ogg` crate and a hand-written `decode_opus` function. That was superseded:
+
+- `audiopus`'s latest release is `0.3.0-rc.0`, a pre-release. The original `audiopus = "0.3"` requirement does not even resolve, because cargo excludes pre-releases.
+- `symphonia-adapter-libopus` exists at a stable **0.3.0** and registers libopus as a codec inside symphonia itself.
+- symphonia already demuxes Ogg (it decodes OGG/Vorbis today), so no container parser is needed.
+
+The adapter approach therefore deletes the hand-written `decode_opus`, the manual "skip the first two Ogg packets" header handling, and the `ogg` dependency. `.opus` files flow through the existing `decode()` unchanged once the codec is registered. Approved by the human partner.
+
+`libopus` 1.6.1 is installed on the development machine. **Windows build linkage is deliberately deferred to Plan 2**, which introduces the Windows CI runner; see the spec's risk list.
 
 **Files:**
 - Modify: `crates/core/src/decode.rs`, `crates/core/Cargo.toml`, `tests/fixtures/README.md`
 
 **Interfaces:**
 - Consumes: `decode::{Audio, DecodeError, TARGET_RATE}`
-- Produces: no new public API — `decode()` gains Opus handling internally.
+- Produces: no new public API — `decode()` gains Opus support internally.
 
-- [ ] **Step 1: Try Symphonia's Opus support first**
+- [ ] **Step 1: Add the dependency and learn its registration API**
+
+In `crates/core/Cargo.toml` under `[dependencies]`:
+
+```toml
+symphonia-adapter-libopus = "0.3"
+```
+
+Then read the crate's actual API before writing code:
+
+```bash
+cargo doc --no-deps --open --package symphonia-adapter-libopus
+```
+
+You need two things from it: the decoder type it exposes, and the supported way to register that decoder so `symphonia`'s codec lookup finds it. In symphonia 0.6 the default registry comes from `symphonia::default::get_codecs()`, which cannot be mutated — the usual pattern is to construct a `CodecRegistry`, populate it with the enabled defaults, then register the extra codec. Find the real function names rather than guessing, and record them in your report.
+
+- [ ] **Step 2: Create the Opus fixture**
 
 ```bash
 ffmpeg -y -f lavfi -i "sine=frequency=440:duration=2" -c:a libopus tests/fixtures/tone.opus
-cargo test --package transcriba-core decode
 ```
 
-Add this test to `crates/core/src/decode.rs`'s test module:
+Append to `tests/fixtures/README.md`:
+
+```markdown
+`tone.opus` additionally covers the Opus path, which routes through
+`symphonia-adapter-libopus` rather than a native symphonia codec.
+```
+
+- [ ] **Step 3: Write the failing test**
+
+Add to the test module in `crates/core/src/decode.rs`, in the style of the existing tests:
 
 ```rust
-#[test]
-fn decodes_opus() {
-    let audio = decode(&fixture("tone.opus")).expect("decodes opus");
-    assert!(!audio.samples.is_empty());
-    assert!((audio.duration - 2.0).abs() < 0.2);
-}
+    #[test]
+    fn decodes_opus() {
+        let audio = decode(&fixture("tone.opus")).expect("decodes opus");
+        assert!((audio.duration - 2.0).abs() < 0.2, "duration was {}", audio.duration);
+        assert!(audio.samples.iter().all(|s| s.is_finite() && s.abs() <= 1.01));
+    }
 ```
+
+- [ ] **Step 4: Run the test to verify it fails**
 
 Run: `cargo test --package transcriba-core decode::tests::decodes_opus`
+Expected: FAIL with an `UnsupportedCodec` error naming `AudioCodecId(4097)` — Opus is recognised but has no decoder registered yet.
 
-**If it passes, Symphonia handles Opus and this task is done — commit the fixture and test and skip the remaining steps.** Verify this before adding a C dependency you may not need.
+Capture the literal output.
 
-- [ ] **Step 2: If it failed, add libopus bindings**
+- [ ] **Step 5: Register the Opus decoder**
 
-In `crates/core/Cargo.toml`:
+Replace the bare `symphonia::default::get_codecs()` call in `decode()` with a lazily-initialised custom registry that contains the enabled defaults plus the libopus decoder. Build it once via `std::sync::OnceLock<CodecRegistry>` rather than per call — constructing a registry on every decode would be wasteful and this function is called once per file but may later be called per job.
 
-```toml
-audiopus = "0.3"
-ogg = "0.9"
-```
+Keep everything else about `decode()` unchanged, including the stereo averaging, the `Ok(None)` end-of-stream handling, the `ResetRequired` loud failure, and the resampling path.
 
-- [ ] **Step 3: Route Opus files to a dedicated decoder**
-
-In `decode()`, before the Symphonia probe:
-
-```rust
-    if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("opus")) {
-        return decode_opus(path);
-    }
-```
-
-Add:
-
-```rust
-/// Decodes Ogg-contained Opus via libopus. Symphonia's Opus codec is not
-/// production-ready, and WhatsApp voice notes are commonly Opus.
-fn decode_opus(path: &Path) -> Result<Audio, DecodeError> {
-    use audiopus::{coder::Decoder as OpusDecoder, Channels, SampleRate};
-
-    let file = std::fs::File::open(path).map_err(|e| DecodeError::Open(e.to_string()))?;
-    let mut reader = ogg::PacketReader::new(std::io::BufReader::new(file));
-
-    // libopus decodes natively at 16kHz, so no resampling is needed.
-    let mut decoder = OpusDecoder::new(SampleRate::Hz16000, Channels::Mono)
-        .map_err(|e| DecodeError::Decode(e.to_string()))?;
-
-    let mut samples: Vec<f32> = Vec::new();
-    let mut frame = vec![0f32; 1920]; // 120ms at 16kHz, the largest Opus frame
-    let mut index = 0usize;
-
-    while let Some(packet) = reader
-        .read_packet()
-        .map_err(|e| DecodeError::Decode(e.to_string()))?
-    {
-        index += 1;
-        // The first two Ogg packets are the OpusHead and OpusTags headers.
-        if index <= 2 {
-            continue;
-        }
-        match decoder.decode_float(Some(&packet.data), &mut frame[..], false) {
-            Ok(written) => samples.extend_from_slice(&frame[..written]),
-            Err(_) => continue,
-        }
-    }
-
-    if samples.is_empty() {
-        return Err(DecodeError::Empty);
-    }
-    let duration = samples.len() as f64 / TARGET_RATE as f64;
-    Ok(Audio { samples, duration })
-}
-```
-
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 6: Run the test to verify it passes**
 
 Run: `cargo test --package transcriba-core decode`
-Expected: PASS, 6 tests.
+Expected: PASS, 7 tests.
 
-If `audiopus` fails to build for lack of libopus, install it (`sudo pacman -S opus`) and note in the commit that CI needs it too — this becomes a CI dependency on both Linux and Windows.
+The 2-second duration assertion is the real check. Opus always decodes at 48kHz internally, so the resampler must bring it to 16kHz; if the duration is off by 3× then the resampling path was bypassed.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Verify no regression and commit**
+
+Run: `cargo test --workspace`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`
 
 ```bash
-git add crates/core/src/decode.rs crates/core/Cargo.toml tests/fixtures
-git commit -m "feat(core): decode opus audio via libopus"
+git add crates/core/src/decode.rs crates/core/Cargo.toml Cargo.lock tests/fixtures
+git commit -m "feat(core): decode opus via symphonia-adapter-libopus"
 ```
 
 ---

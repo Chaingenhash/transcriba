@@ -75,7 +75,7 @@ requires the others to be tested.
 |---|---|---|
 | Transcribe | `whisper-rs` 0.16 | Static-links whisper.cpp. Exposes whisper's progress callback. Has Windows build instructions. |
 | Decode | `symphonia` | MP3, M4A/MP4, WAV, FLAC, OGG/Vorbis. **Not Opus.** |
-| Opus decode | `audiopus` | libopus bindings. Needed because WhatsApp voice notes are often Opus. |
+| Opus decode | `symphonia-adapter-libopus` | Registers libopus as a codec inside symphonia. Revised 2026-08-05 from `audiopus`, whose only release is a pre-release, and which would have needed a separate Ogg parser. |
 | Resample | `rubato` | 48kHz → 16kHz. Replaces the `ffmpeg` step. |
 | DOCX | `docx-rs` | Writer only, which is all that is needed. |
 | PDF | `genpdf` | Pure Rust, layout over `printpdf`. See risks. |
@@ -222,7 +222,24 @@ Items to resolve during implementation rather than design:
    If typography matters more later, `typst` embedded as a library is the upgrade path.
 3. **Vulkan on Windows.** Expected to fail per the issue above. Verify empirically; ship
    Windows CPU-only if confirmed.
-4. **Colleague hardware.** 0.25× realtime was measured on a Core Ultra 7 with 14 threads.
+4. **libopus linkage — dynamic today, must become static for distribution.**
+   `symphonia-adapter-libopus` is depended on with `default-features = false`, which disables
+   its `bundled` feature. That feature vendors libopus and links it statically, but requires
+   `cmake` at build time, which is not installed on the development machine. The current
+   configuration therefore **dynamically links the system libopus**.
+
+   For Plan 1 (a library plus a developer CLI) that is fine. For Plan 2 it is not: an
+   installer handed to a non-technical colleague cannot assume libopus is present on their
+   machine. Plan 2 must either enable `bundled` — which means installing `cmake` locally and
+   adding it to CI — or bundle the shared library into the AppImage and Windows installer.
+   On Windows, `vcpkg install opus:x64-windows-static` is the documented route, and
+   `audiopus_sys` reportedly static-links there by default.
+
+   Linux CI already needs a libopus development package; the plan's CI step installs
+   `libopus-dev`. Deferred deliberately with the human partner's agreement: a Plan 2 blocker,
+   not a Plan 1 one.
+
+5. **Colleague hardware.** 0.25× realtime was measured on a Core Ultra 7 with 14 threads.
    An older laptop at 0.8× realtime turns a 90-minute recording into a 72-minute wait.
    Measure on a real colleague machine early — it may justify offering a smaller model as
    a "faster, less accurate" option.
