@@ -8,6 +8,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+/// Test-only proof that `abort_if_cancelled` actually got called by whisper.cpp, not just
+/// that the contract it implements (cancel_flag true -> `Cancelled`) holds. Without this,
+/// if the raw callback wiring silently stopped firing (e.g. a future whisper-rs upgrade
+/// changing the FFI shape), `full()` would simply run to completion, `cancel_flag` would
+/// still read `true` from the polling loop having set it, and `transcribe` would still
+/// return `Cancelled` for the wrong reason — the test guarding this would pass regardless.
+/// Does not exist in release builds: it is `#[cfg(test)]`, not merely inert in one.
+#[cfg(test)]
+static ABORT_CALLBACK_CALLS: AtomicI32 = AtomicI32::new(0);
+
 #[derive(Debug, Clone)]
 pub struct Options {
     pub language: String,
@@ -132,6 +142,8 @@ pub fn transcribe(
         // the entire duration of the `thread::scope` block below, which is
         // the only place this callback can be invoked (synchronously, on
         // the worker thread, inside `state.full`).
+        #[cfg(test)]
+        ABORT_CALLBACK_CALLS.fetch_add(1, Ordering::Relaxed);
         unsafe { &*(user_data as *const AtomicBool) }.load(Ordering::Relaxed)
     }
     // SAFETY: `abort_if_cancelled` matches `WhisperAbortCallback`'s
@@ -327,8 +339,16 @@ mod tests {
         let call_count_reader = Arc::clone(&call_count);
         let should_cancel = move || call_count_reader.fetch_add(1, Ordering::Relaxed) > 0;
 
+        // Reset first so a stale count left behind by another test in this process
+        // (tests share the same `static`) can't make the assertion below pass for free.
+        ABORT_CALLBACK_CALLS.store(0, Ordering::Relaxed);
         let err = transcribe(&noise(5.0, 0.1), &opts, &mut |_| {}, &should_cancel);
         assert!(matches!(err, Err(TranscribeError::Cancelled)));
+        assert!(
+            ABORT_CALLBACK_CALLS.load(Ordering::Relaxed) > 0,
+            "abort_if_cancelled was never actually invoked by whisper.cpp \
+— cancellation returned Cancelled for the wrong reason"
+        );
     }
 
     #[test]
