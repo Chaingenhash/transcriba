@@ -68,15 +68,31 @@ pub fn resolve() -> Result<Option<PathBuf>, ModelError> {
         verify(&path)?;
         return Ok(Some(path));
     }
-    let cached = cache_dir()?.join(MODEL_FILENAME);
-    match verify(&cached) {
-        Ok(()) => Ok(Some(cached)),
+    resolve_cached(&cache_dir()?.join(MODEL_FILENAME))
+}
+
+/// The cache-path half of [`resolve`], split out so its not-found/corrupt/IO-error
+/// branching can be exercised directly against an arbitrary path in tests, without
+/// needing to control the real OS cache directory.
+fn resolve_cached(cached: &Path) -> Result<Option<PathBuf>, ModelError> {
+    // Checked separately from the `verify` match below: `ModelError::Io(String)` has
+    // already discarded the underlying `io::ErrorKind`, so "not found" can no longer be
+    // told apart from a genuine permissions or I/O problem once it's wrapped in that
+    // variant. Ruling out "not found" here first means any `Io` error `verify` returns
+    // past this point is real and must propagate, rather than being treated as "must
+    // download" — which would otherwise re-download 574MB on every launch and then fail
+    // to rename over a file it was never actually permitted to touch, with nothing
+    // pointing at the real cause.
+    if !cached.exists() {
+        return Ok(None);
+    }
+    match verify(cached) {
+        Ok(()) => Ok(Some(cached.to_path_buf())),
         // A corrupt cached file is deleted so the next run re-downloads cleanly.
         Err(ModelError::Invalid(_)) => {
-            std::fs::remove_file(&cached).ok();
+            std::fs::remove_file(cached).ok();
             Ok(None)
         }
-        Err(ModelError::Io(_)) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -186,5 +202,58 @@ mod tests {
     fn cache_dir_ends_with_expected_path() {
         let dir = cache_dir().unwrap();
         assert!(dir.ends_with("transcriba/models"));
+    }
+
+    #[test]
+    fn resolve_cached_reports_none_when_nothing_is_cached() {
+        let dir = std::env::temp_dir().join("transcriba-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("does-not-exist.bin");
+        std::fs::remove_file(&path).ok();
+        assert!(matches!(resolve_cached(&path), Ok(None)));
+    }
+
+    #[test]
+    fn resolve_cached_still_deletes_and_redownloads_on_corruption() {
+        let mut bytes = vec![0u8; MIN_MODEL_BYTES as usize + 1];
+        bytes[..4].copy_from_slice(b"junk");
+        let path = temp_file("resolve-corrupt.bin", &bytes);
+        assert!(matches!(resolve_cached(&path), Ok(None)));
+        assert!(!path.exists(), "corrupt cached file should be deleted");
+    }
+
+    // Regression test for the finding that `resolve()` was collapsing every IO error
+    // (permissions, EIO, ...) to "must download", which on a real permissions problem
+    // means every launch re-downloads the 574MB model and then fails to rename over a
+    // file it was never allowed to touch, forever, with nothing pointing at the real
+    // cause. A permission-denied file is used to produce a genuine IO error: the file
+    // is a sparse file (created via `set_len`, so this doesn't actually write ~500MB to
+    // disk) sized past `MIN_MODEL_BYTES` so `verify` reaches the point of trying to open
+    // and read it, then chmod'd to be unreadable so that open fails.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_cached_propagates_genuine_io_errors_instead_of_redownloading() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_file("resolve-permission-denied.bin", b"");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MIN_MODEL_BYTES + 1).unwrap();
+        drop(file);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Root (and some CI/container setups) ignores file permission bits entirely, in
+        // which case the scenario this test relies on can't be constructed at all; skip
+        // rather than fail on an assumption that doesn't hold on this machine.
+        let root_can_read_anyway = std::fs::File::open(&path).is_ok();
+
+        if !root_can_read_anyway {
+            assert!(
+                matches!(resolve_cached(&path), Err(ModelError::Io(_))),
+                "a genuine IO error must propagate, not be reported as 'must download'"
+            );
+        }
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::remove_file(&path).ok();
     }
 }
