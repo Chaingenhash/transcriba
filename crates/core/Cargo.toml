@@ -16,6 +16,8 @@ symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4", "ogg", "vorbi
 # a preference. Linux CI therefore needs a libopus development package (e.g. libopus-dev)
 # present, or this dependency will fail to link.
 symphonia-adapter-libopus = { version = "0.3", default-features = false }
+whisper-rs = "0.16"
+num_cpus = "1"
 
 [dev-dependencies]
 zip = "2"

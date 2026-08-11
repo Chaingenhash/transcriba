@@ -11,6 +11,7 @@ pub mod decode;
 pub mod model_store;
 pub mod reflow;
 pub mod render;
+pub mod transcribe;
 
 #[cfg(test)]
 mod tests {
