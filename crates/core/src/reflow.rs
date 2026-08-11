@@ -89,7 +89,7 @@ pub fn reflow(cues: &[Cue]) -> Vec<Block> {
 
     for s in &sentences {
         let gap = prev_end.map_or(0.0, |p| s.start - p);
-        let too_long = current.iter().map(|t| t.len()).sum::<usize>() > MAX_PARA_CHARS;
+        let too_long = current.iter().map(|t| t.chars().count()).sum::<usize>() > MAX_PARA_CHARS;
 
         if !current.is_empty() && (gap > PAUSE_BREAK_SECS || too_long) {
             flush(&mut blocks, &mut current, para_start);
