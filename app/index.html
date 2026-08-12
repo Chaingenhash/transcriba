@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="pt">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Transcriba</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main id="app">
+      <div id="drop" class="drop">
+        <p class="drop-title">Arraste um ficheiro de áudio para aqui</p>
+        <button id="pick" type="button">Escolher ficheiro</button>
+      </div>
+      <section id="controls" class="controls">
+        <label for="lang">Idioma</label>
+        <select id="lang"></select>
+      </section>
+      <section id="status" class="status" hidden>
+        <p id="phase"></p>
+        <progress id="bar" max="100" value="0"></progress>
+        <button id="cancel" type="button">Cancelar</button>
+      </section>
+      <section id="result" class="result" hidden></section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

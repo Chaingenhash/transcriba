@@ -3,3 +3,8 @@
 *.docx
 *.pdf
 /tests/fixtures/*.bin
+
+/app/node_modules
+/app/dist
+/app/src-tauri/gen
+/app/src-tauri/target
