@@ -141,6 +141,21 @@ pub fn download(
     Ok(())
 }
 
+/// Returns a usable model path, downloading it first if necessary.
+///
+/// This is the whole find-or-fetch sequence in one call so that every front end
+/// — the CLI and the desktop app — shares it rather than reimplementing it.
+pub fn ensure_available(
+    on_progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<PathBuf, ModelError> {
+    if let Some(path) = resolve()? {
+        return Ok(path);
+    }
+    let dest = cache_dir()?.join(MODEL_FILENAME);
+    download(&dest, on_progress)?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +270,22 @@ mod tests {
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn ensure_available_returns_the_override_without_downloading() {
+        let mut bytes = vec![0u8; MIN_MODEL_BYTES as usize + 1];
+        bytes[..4].copy_from_slice(b"lmgg");
+        let path = temp_file("ensure-override.bin", &bytes);
+        std::env::set_var("TRANSCRIBA_MODEL_PATH", &path);
+        let mut called = false;
+        let got = ensure_available(&mut |_, _| called = true).expect("resolves");
+        std::env::remove_var("TRANSCRIBA_MODEL_PATH");
+        assert_eq!(got, path);
+        assert!(
+            !called,
+            "must not report download progress when the model already exists"
+        );
+        std::fs::remove_file(path).ok();
     }
 }

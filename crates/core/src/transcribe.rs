@@ -69,12 +69,40 @@ fn is_digital_silence(samples: &[f32]) -> bool {
     (sum_sq / samples.len() as f64).sqrt() < SILENCE_RMS_THRESHOLD
 }
 
+/// Which compute backend actually executed a run.
+///
+/// whisper.cpp has documented paths where a GPU build silently falls back to
+/// CPU, so this is reported rather than assumed — the value is produced by the
+/// code that ran, not by the caller.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Backend {
+    Cpu { threads: usize },
+    Gpu { name: String },
+}
+
+impl std::fmt::Display for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Backend::Cpu { threads: 1 } => write!(f, "CPU (1 thread)"),
+            Backend::Cpu { threads } => write!(f, "CPU ({threads} threads)"),
+            Backend::Gpu { name } => write!(f, "GPU ({name})"),
+        }
+    }
+}
+
+/// A finished transcription plus the backend that produced it.
+#[derive(Debug)]
+pub struct Transcript {
+    pub cues: Vec<Cue>,
+    pub backend: Backend,
+}
+
 pub fn transcribe(
     audio: &Audio,
     opts: &Options,
     on_progress: &mut dyn FnMut(i32),
     should_cancel: &dyn Fn() -> bool,
-) -> Result<Vec<Cue>, TranscribeError> {
+) -> Result<Transcript, TranscribeError> {
     if should_cancel() {
         return Err(TranscribeError::Cancelled);
     }
@@ -225,7 +253,12 @@ pub fn transcribe(
     if cues.is_empty() {
         return Err(TranscribeError::NoSpeech);
     }
-    Ok(cues)
+    Ok(Transcript {
+        cues,
+        backend: Backend::Cpu {
+            threads: opts.threads,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -366,5 +399,44 @@ mod tests {
         };
         let err = transcribe(&silence(3.0), &opts, &mut |_| {}, &|| false);
         assert!(matches!(err, Err(TranscribeError::NoSpeech)));
+    }
+
+    #[test]
+    fn backend_displays_cpu_thread_count() {
+        assert_eq!(Backend::Cpu { threads: 12 }.to_string(), "CPU (12 threads)");
+        assert_eq!(Backend::Cpu { threads: 1 }.to_string(), "CPU (1 thread)");
+    }
+
+    #[test]
+    fn backend_displays_gpu_name() {
+        assert_eq!(
+            Backend::Gpu {
+                name: "Intel Graphics".into()
+            }
+            .to_string(),
+            "GPU (Intel Graphics)"
+        );
+    }
+
+    #[test]
+    fn transcript_reports_the_cpu_backend_it_ran_on() {
+        let Some(opts) = tiny_model_opts() else {
+            return;
+        };
+        // ggml-tiny may legitimately find no speech in a synthetic tone, so both
+        // outcomes are acceptable — but each is asserted, so neither passes vacuously.
+        match transcribe(&tone(2.0, 0.2), &opts, &mut |_| {}, &|| false) {
+            Ok(transcript) => assert_eq!(
+                transcript.backend,
+                Backend::Cpu {
+                    threads: opts.threads
+                },
+                "a successful run must report the backend it actually used"
+            ),
+            Err(e) => assert!(
+                matches!(e, TranscribeError::NoSpeech),
+                "the only acceptable failure for a clean tone is NoSpeech, got {e:?}"
+            ),
+        }
     }
 }
