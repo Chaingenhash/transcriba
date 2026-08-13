@@ -11,8 +11,15 @@ use transcriba_core::{decode, model_store, output, reflow, render, transcribe};
 
 /// Progress phases, mapped to the spec's bands: preparing and decoding occupy
 /// the first 5%, transcription 5-95%, rendering the last 5%.
+/// `rename_all` only renames the variants; `rename_all_fields` is what reaches
+/// the fields inside them. Without the latter, `Decoded` ships `duration_secs`
+/// to a frontend that reads `durationSecs`.
 #[derive(Serialize, Clone)]
-#[serde(tag = "phase", rename_all = "camelCase")]
+#[serde(
+    tag = "phase",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Progress {
     Preparing {
         pct: u8,
@@ -248,4 +255,54 @@ fn run(
 #[tauri::command]
 pub fn cancel_job(jobs: State<'_, Jobs>, job_id: String) {
     jobs.cancel(&job_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// On an enum, `rename_all` only renames the *variants*; struct-variant
+    /// fields keep their Rust names unless `rename_all_fields` is set. Getting
+    /// that wrong sends `duration_secs` while `Progress` in `app/src/api.ts`
+    /// reads `durationSecs`, and the wait screen renders `NaN min`.
+    #[test]
+    fn decoded_progress_carries_a_camel_case_duration() {
+        assert_eq!(
+            serde_json::to_value(Progress::Decoded {
+                duration_secs: 90.0
+            })
+            .unwrap(),
+            json!({ "phase": "decoded", "durationSecs": 90.0 }),
+        );
+    }
+
+    #[test]
+    fn preparing_progress_keeps_its_tag_and_percentage() {
+        assert_eq!(
+            serde_json::to_value(Progress::Preparing { pct: 42 }).unwrap(),
+            json!({ "phase": "preparing", "pct": 42 }),
+        );
+    }
+
+    #[test]
+    fn outcome_fields_reach_the_frontend_in_camel_case() {
+        assert_eq!(
+            serde_json::to_value(Outcome {
+                docx: "a.docx".into(),
+                pdf: "a.pdf".into(),
+                backend: "cpu".into(),
+                duration_secs: 90.0,
+                paragraphs: 3,
+            })
+            .unwrap(),
+            json!({
+                "docx": "a.docx",
+                "pdf": "a.pdf",
+                "backend": "cpu",
+                "durationSecs": 90.0,
+                "paragraphs": 3,
+            }),
+        );
+    }
 }
