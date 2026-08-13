@@ -1,0 +1,72 @@
+# Builds installers on a v* tag and attaches them to a GitHub release.
+#
+# Artifacts are UNSIGNED, a deliberate choice: a code-signing certificate costs
+# €200-400/year and this is an internal tool for a handful of colleagues.
+# Windows users will see "Windows protected your PC" and must click More info ->
+# Run anyway. The README documents this; do not remove that note.
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bundles: appimage
+          - os: windows-latest
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm install
+
+      - name: Build the installer (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: app
+        # NO_STRIP=1 is required here: linuxdeploy's vendored strip predates the
+        # SHT_RELR/.relr.dyn compact-relocation format current binutils emits, so
+        # it fails on system .so files (webkit2gtk, gtk, glib, ...) with "unknown
+        # type [0x13] section '.relr.dyn'" and tauri build reports the unhelpful
+        # "failed to run linuxdeploy". This is not machine-specific — see
+        # docs/superpowers/plan-2-carry-forward.md and README.md. Do not remove
+        # this without first vendoring a linuxdeploy release whose strip
+        # understands RELR.
+        env:
+          NO_STRIP: "1"
+        run: npx tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Build the installer (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: app
+        run: npx tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Attach artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            app/src-tauri/target/release/bundle/appimage/*.AppImage
+            app/src-tauri/target/release/bundle/nsis/*.exe
+          fail_on_unmatched_files: false
+          draft: true
