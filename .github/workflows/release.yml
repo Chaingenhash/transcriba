@@ -35,8 +35,12 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
+          # libvulkan-dev and glslc are for the `vulkan` feature the Linux
+          # build enables below — whisper.cpp's Vulkan backend needs the loader
+          # headers and a GLSL shader compiler at build time.
           sudo apt-get install -y cmake libclang-dev \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libvulkan-dev glslc
 
       - name: Verify Windows build tools
         if: matrix.os == 'windows-latest'
@@ -64,11 +68,21 @@ jobs:
         # understands RELR.
         env:
           NO_STRIP: "1"
-        run: npx tauri build --bundles ${{ matrix.bundles }}
+        # `--features vulkan` is Linux-only and deliberate. Measured on Intel
+        # Meteor Lake (Mesa): 110s vs 431s for a 5-minute clip, a 3.9x speedup,
+        # transcripts matching to within one word. The reported backend always
+        # reflects what actually ran, so a machine without a usable Vulkan
+        # device falls back to CPU and says so in the document header.
+        run: npx tauri build --bundles ${{ matrix.bundles }} --features vulkan
 
       - name: Build the installer (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: app
+        # No `--features vulkan` here: whisper.cpp silently fails to register
+        # the Vulkan backend on Windows MSVC static builds (a static-init race
+        # in ggml_vk_instance_init), so it would ship the build-time cost and
+        # the GPU code path while always falling back to CPU. Revisit if that
+        # upstream bug is fixed.
         run: npx tauri build --bundles ${{ matrix.bundles }}
 
       # `app/src-tauri` is a workspace member, so cargo (and tauri, which shells out to

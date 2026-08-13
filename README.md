@@ -29,10 +29,19 @@ nothing leaves your machine.
 1. Open Transcriba.
 2. Drop an audio file onto the window (or use the file picker).
 3. Pick the spoken language, or leave it on auto-detect.
-4. Wait. **Budget roughly 25 minutes per hour of audio** on a typical laptop — a
-   90-minute meeting takes about 35–40 minutes. The progress bar moves the whole time;
-   if it looks stuck at a percentage for a minute or two, that's normal, not a hang. Don't
-   kill it.
+4. Wait. How long depends on whether your machine has a usable GPU:
+
+   | | Roughly, per hour of audio |
+   |---|---|
+   | Linux with a working GPU | **6–7 minutes** |
+   | Anything on CPU | **25 minutes** |
+
+   The Linux build uses your GPU when it can and falls back to CPU when it can't; the
+   Windows build is CPU-only. Either way the finished document's header says which one
+   actually ran, so you never have to guess — look for `GPU (…)` or `CPU (N threads)`.
+
+   The progress bar moves the whole time. If it sits on a percentage for a minute or two
+   that's normal, not a hang. Don't kill it.
 5. When it finishes, a `.docx` and a `.pdf` appear next to the original file (e.g.
    `meeting.mp3` produces `meeting.docx` and `meeting.pdf`). Existing files are never
    overwritten — a new one gets a numbered suffix instead.

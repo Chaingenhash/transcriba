@@ -24,8 +24,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
+          # libvulkan-dev and glslc back the vulkan-feature check below.
           sudo apt-get install -y cmake libclang-dev \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libvulkan-dev glslc
 
       - name: Verify Windows build tools
         if: matrix.os == 'windows-latest'
@@ -70,5 +72,18 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+        env:
+          TRANSCRIBA_TEST_MODEL: ${{ github.workspace }}/tests/fixtures/ggml-tiny.bin
+
+      # Linux releases ship with `--features vulkan`, so the gpu_detect module and
+      # its unit tests must compile and pass somewhere. Without this they are
+      # invisible to CI and can rot until a release build fails. Not run on Windows:
+      # whisper.cpp cannot register the Vulkan backend there, so releases are
+      # CPU-only and the feature is never built for it.
+      - name: Check the vulkan feature (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo clippy -p transcriba-core --features vulkan --all-targets --locked -- -D warnings
+          cargo test -p transcriba-core --features vulkan --locked
         env:
           TRANSCRIBA_TEST_MODEL: ${{ github.workspace }}/tests/fixtures/ggml-tiny.bin

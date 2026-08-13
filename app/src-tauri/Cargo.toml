@@ -16,3 +16,19 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 transcriba-core = { path = "../../crates/core" }
+
+[features]
+default = []
+# Forwards core's opportunistic Vulkan so `tauri build --features vulkan`
+# reaches it — the CLI's `--features` applies to this crate, not to core.
+#
+# Enabled for Linux releases only. Measured 2026-08-13 on Intel Meteor Lake
+# (Mesa): 110s vs 431s for a 5-minute clip, a 3.9x speedup, with transcripts
+# matching to within one word. Windows stays CPU-only because whisper.cpp
+# silently fails to register the Vulkan backend on MSVC static builds.
+#
+# Build requirements: `libvulkan-dev` and `glslc` (shader compiler).
+# The reported backend always reflects what actually ran — see core's
+# `gpu_detect` — so a silent fallback to CPU shows up in the document header
+# rather than being assumed away.
+vulkan = ["transcriba-core/vulkan"]
