@@ -81,6 +81,12 @@ cd app && npx tauri dev      # run the desktop app
 cd app && npx tauri build --bundles appimage   # produce a Linux AppImage
 ```
 
+If the AppImage build fails with `strip`/`.relr.dyn` errors, retry with
+`NO_STRIP=1 npx tauri build --bundles appimage`. `linuxdeploy`'s vendored `strip`
+predates the `SHT_RELR` relocation format newer binutils emit by default, so it can't
+strip the system libraries it copies in — this isn't specific to one machine and can hit
+CI runners too. See `docs/superpowers/plan-2-carry-forward.md` for the full story.
+
 ### The CLI binary is not the supported artifact
 
 `crates/cli` builds a standalone `transcriba` binary, useful for local development, but

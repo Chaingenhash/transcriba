@@ -19,6 +19,23 @@ Either enable `bundled` (cmake is now installed locally, and CI declares it) or 
 shared library into the AppImage and Windows installer. On Windows,
 `vcpkg install opus:x64-windows-static` is the documented route.
 
+**AppImage bundling fails on this machine unless `NO_STRIP=1` is set — and the same
+failure can hit CI.** `npx tauri build --bundles appimage` downloads `linuxdeploy` (a
+prebuilt binary dated 2024-07-26) to strip the shared libraries it copies into the AppDir.
+Its vendored `strip` predates the `SHT_RELR`/`.relr.dyn` compact-relocation section that
+current binutils emits by default, so it fails on essentially every system `.so`
+(`webkit2gtk`, `gtk`, `glib`, ...) with `unknown type [0x13] section '.relr.dyn'`, and
+`tauri build` reports the unhelpful `failed to run linuxdeploy`. `linuxdeploy` recognizes
+`NO_STRIP=1` (confirmed via `strings` on the extracted binary) and skips stripping
+entirely, which unblocks the build. Two ways to close this properly rather than carrying
+`NO_STRIP=1` forever: pin/vendor a newer `linuxdeploy` release whose `strip` understands
+RELR, or set `NO_STRIP=1` deliberately in the release workflow. Either way, note that the
+bundle built during Task 7 (104MB) ships **unstripped** shared libraries as a direct
+result — larger and with debug symbols retained, no functional difference. This is not
+Arch-specific: any distro whose binutils defaults to `SHT_RELR` (plausibly including
+current `ubuntu-latest` GitHub Actions runners) will reproduce it, so whoever wires the
+Linux release CI job should expect to hit this and budget for one of the two fixes above.
+
 **Vulkan on Windows is expected to fail.**
 whisper.cpp has an open bug where the Vulkan backend silently fails to register on Windows
 MSVC static builds — a static-init race throws inside `ggml_vk_instance_init()`, the backend

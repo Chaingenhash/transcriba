@@ -30,6 +30,16 @@ pub struct Outcome {
     pub paragraphs: usize,
 }
 
+// This literal "assets/fonts" must match how `tauri.conf.json`'s `bundle.resources`
+// places the files, which is why that config uses the *map* form
+// (`{ "../../assets/fonts/*": "assets/fonts" }`) rather than a plain list. The list form
+// derives each resource's destination from its own source path, turning every ".."
+// component into a literal "_up_" folder — so a two-levels-up source would land at
+// "_up_/_up_/assets/fonts" inside the bundle, not "assets/fonts". `resolve()` here has no
+// such source path to mangle; it only maps ".." components *in the string passed to it*
+// (there are none), so it always looks in "$RESOURCE/assets/fonts" verbatim. Reverting
+// `tauri.conf.json` to the list form silently breaks PDF rendering in bundled builds only
+// — `tauri dev` reads fonts from the source tree directly and would not catch it.
 fn font_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .resolve("assets/fonts", BaseDirectory::Resource)
