@@ -1,21 +1,72 @@
 name: ci
 on: [push, pull_request]
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Install audio fixtures toolchain
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg libopus-dev cmake libclang-dev
-      - name: Fetch tiny model for integration tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Verify Windows build tools
+        if: matrix.os == 'windows-latest'
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --version
+          if (-not $?) { throw "cmake not found on windows-latest runner" }
+          if (-not $env:LIBCLANG_PATH) { echo "LIBCLANG_PATH unset; bindgen may need it" }
+        shell: pwsh
+
+      - name: Fetch tiny model (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           mkdir -p tests/fixtures
           curl -fsL -o tests/fixtures/ggml-tiny.bin \
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin?download=true"
+
+      - name: Fetch tiny model (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path tests/fixtures | Out-Null
+          Invoke-WebRequest -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin?download=true" `
+            -OutFile tests/fixtures/ggml-tiny.bin
+        shell: pwsh
+
+      # Type-checks the frontend, which nothing else in this workflow does. Not
+      # a hard dependency for what follows: `cargo clippy`/`cargo test` do NOT
+      # require `dist` to exist, because `generate_context!` short-circuits the
+      # frontendDist existence check whenever `dev && devUrl.is_some()`
+      # (tauri-codegen-2.6.3/src/context.rs:176-193), and `dev` is
+      # `cfg!(not(feature = "custom-protocol"))` (tauri-macros-2.6.3/src/context.rs:155)
+      # — a feature plain `cargo clippy`/`cargo test` never enable (only the
+      # Tauri CLI passes `--features tauri/custom-protocol`). Kept before the
+      # Rust steps anyway for hygiene and to mirror release.yml's structure.
+      - name: Build the frontend
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked

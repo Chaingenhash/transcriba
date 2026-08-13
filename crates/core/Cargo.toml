@@ -10,15 +10,28 @@ rubato = "4.0"
 ureq = "3"
 dirs = "6"
 symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4", "ogg", "vorbis", "flac", "wav", "pcm"] }
-# default-features = false drops the "bundled" feature, which vendors and statically links
-# libopus but needs `cmake` at build time. Without it, this dynamically links whatever
-# `libopus` is installed on the build/run machine instead — an availability workaround, not
-# a preference. Linux CI therefore needs a libopus development package (e.g. libopus-dev)
-# present, or this dependency will fail to link.
-symphonia-adapter-libopus = { version = "0.3", default-features = false }
+# `bundled` vendors libopus and links it statically, so a shipped installer does
+# not depend on the target machine having libopus. It needs `cmake` at build
+# time (and therefore in CI). Plan 1 shipped with default-features = false
+# because cmake was unavailable then; see docs/superpowers/plan-2-carry-forward.md.
+symphonia-adapter-libopus = "0.3"
 whisper-rs = "0.16"
 num_cpus = "1"
 
 [dev-dependencies]
 zip = "2"
 pdf-extract = "0.12"
+
+[features]
+default = []
+# Opportunistic Vulkan. Chosen over CUDA because the target machines are office
+# laptops with Intel integrated graphics: one Vulkan build covers Intel, AMD and
+# NVIDIA, whereas CUDA needs its toolkit at build time and only helps rare
+# NVIDIA machines. Expected to be unusable on Windows MSVC static builds
+# (whisper.cpp silently fails to register the backend there) — see the spec.
+# `raw-api` is pulled in alongside it (not for its own sake) because it is the
+# only way to reach `whisper_log_set` and read back whisper.cpp's own
+# backend-init log line — see transcribe.rs's `gpu_detect` module for why
+# that, rather than assuming success from this feature flag, is the actual
+# source of truth for whether the GPU was really used.
+vulkan = ["whisper-rs/vulkan", "whisper-rs/raw-api"]

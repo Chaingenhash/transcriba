@@ -19,6 +19,23 @@ Either enable `bundled` (cmake is now installed locally, and CI declares it) or 
 shared library into the AppImage and Windows installer. On Windows,
 `vcpkg install opus:x64-windows-static` is the documented route.
 
+**AppImage bundling fails on this machine unless `NO_STRIP=1` is set — and the same
+failure can hit CI.** `npx tauri build --bundles appimage` downloads `linuxdeploy` (a
+prebuilt binary dated 2024-07-26) to strip the shared libraries it copies into the AppDir.
+Its vendored `strip` predates the `SHT_RELR`/`.relr.dyn` compact-relocation section that
+current binutils emits by default, so it fails on essentially every system `.so`
+(`webkit2gtk`, `gtk`, `glib`, ...) with `unknown type [0x13] section '.relr.dyn'`, and
+`tauri build` reports the unhelpful `failed to run linuxdeploy`. `linuxdeploy` recognizes
+`NO_STRIP=1` (confirmed via `strings` on the extracted binary) and skips stripping
+entirely, which unblocks the build. Two ways to close this properly rather than carrying
+`NO_STRIP=1` forever: pin/vendor a newer `linuxdeploy` release whose `strip` understands
+RELR, or set `NO_STRIP=1` deliberately in the release workflow. Either way, note that the
+bundle built during Task 7 (104MB) ships **unstripped** shared libraries as a direct
+result — larger and with debug symbols retained, no functional difference. This is not
+Arch-specific: any distro whose binutils defaults to `SHT_RELR` (plausibly including
+current `ubuntu-latest` GitHub Actions runners) will reproduce it, so whoever wires the
+Linux release CI job should expect to hit this and budget for one of the two fixes above.
+
 **Vulkan on Windows is expected to fail.**
 whisper.cpp has an open bug where the Vulkan backend silently fails to register on Windows
 MSVC static builds — a static-init race throws inside `ggml_vk_instance_init()`, the backend
@@ -118,6 +135,23 @@ systemd-run --user --collect --unit=transcriba-e2e \
 
 Whoever wires release verification needs this, or a real terminal.
 
+## Correction — frontendDist is not actually required for `cargo clippy`/`cargo test`
+
+Task 8's brief claimed the CI frontend-build step must precede the Rust steps because
+`cargo clippy --all-targets` compiles the app crate, whose `tauri::generate_context!` reads
+`tauri.conf.json` and requires `frontendDist` (`../dist`) to exist. That is wrong for the
+plain `cargo clippy`/`cargo test` path: the existence check in
+`tauri-codegen-2.6.3/src/context.rs:176-193` only runs in the `else` branch, which is skipped
+whenever `dev && config.build.dev_url.is_some()`; `dev` is
+`cfg!(not(feature = "custom-protocol"))` (`tauri-macros-2.6.3/src/context.rs:155`), and
+`app/src-tauri/Cargo.toml` never enables `custom-protocol` — only the Tauri CLI injects it via
+`--features tauri/custom-protocol` at build time. So `cargo clippy`/`cargo test` never hit the
+check regardless of build order. The dependency only genuinely holds for `release.yml`'s
+`npx tauri build`, which in turn auto-runs `beforeBuildCommand: "npm run build"` per
+`tauri.conf.json:8` on its own. `ci.yml` still builds the frontend before the Rust steps —
+that ordering is harmless and catches TypeScript regressions nothing else in CI does — but
+it is hygiene, not a hard dependency, and should not be cited as one.
+
 ## Process notes
 
 **Record resolved dependency versions before anything depends on them.** Every version in
@@ -141,3 +175,6 @@ distinguish oversight from unstated context.
 reuses any of it, note that Task 5's code block still shows `symphonia = "0.5"`,
 `rubato = "0.16"`, the old `Fft::new` signature and `IoError => break`, and Task 6 Step 1
 omits `default-features = false`. Read the code, not the plan.
+
+> **Superseded by [plan-3-carry-forward.md](plan-3-carry-forward.md).** Kept as the record of
+> what Plan 1 handed to Plan 2; see that file for current state and open work.

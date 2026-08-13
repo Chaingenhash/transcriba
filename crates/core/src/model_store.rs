@@ -141,10 +141,33 @@ pub fn download(
     Ok(())
 }
 
+/// Returns a usable model path, downloading it first if necessary.
+///
+/// This is the whole find-or-fetch sequence in one call so that every front end
+/// — the CLI and the desktop app — shares it rather than reimplementing it.
+pub fn ensure_available(
+    on_progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<PathBuf, ModelError> {
+    if let Some(path) = resolve()? {
+        return Ok(path);
+    }
+    let dest = cache_dir()?.join(MODEL_FILENAME);
+    download(&dest, on_progress)?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::Mutex;
+
+    /// `TRANSCRIBA_MODEL_PATH` is process-global, and cargo runs tests in this
+    /// binary concurrently by default. Any test that sets and removes it must hold
+    /// this lock for the duration of that manipulation, or two such tests can
+    /// interleave: one observes the other's value, or finds the variable already
+    /// removed before its own assertion runs.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("transcriba-tests");
@@ -189,6 +212,7 @@ mod tests {
 
     #[test]
     fn env_override_takes_precedence_when_valid() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut bytes = vec![0u8; MIN_MODEL_BYTES as usize + 1];
         bytes[..4].copy_from_slice(b"lmgg");
         let path = temp_file("override.bin", &bytes);
@@ -255,5 +279,23 @@ mod tests {
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn ensure_available_returns_the_override_without_downloading() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut bytes = vec![0u8; MIN_MODEL_BYTES as usize + 1];
+        bytes[..4].copy_from_slice(b"lmgg");
+        let path = temp_file("ensure-override.bin", &bytes);
+        std::env::set_var("TRANSCRIBA_MODEL_PATH", &path);
+        let mut called = false;
+        let got = ensure_available(&mut |_, _| called = true).expect("resolves");
+        std::env::remove_var("TRANSCRIBA_MODEL_PATH");
+        assert_eq!(got, path);
+        assert!(
+            !called,
+            "must not report download progress when the model already exists"
+        );
+        std::fs::remove_file(path).ok();
     }
 }

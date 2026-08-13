@@ -28,23 +28,18 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let model_path = match model_store::resolve()? {
-        Some(p) => p,
-        None => {
-            let dest = model_store::cache_dir()?.join(model_store::MODEL_FILENAME);
-            eprintln!("Downloading the speech model once (~574MB)...");
-            let mut last = 0u64;
-            model_store::download(&dest, &mut |done, total| {
-                let pct = total.map(|t| done * 100 / t.max(1)).unwrap_or(0);
-                if pct != last {
-                    last = pct;
-                    eprint!("\r  {pct}%");
-                }
-            })?;
-            eprintln!("\r  done.");
-            dest
+    eprintln!("Preparing the speech model...");
+    let mut last = u64::MAX;
+    let model_path = model_store::ensure_available(&mut |done, total| {
+        let pct = total.map(|t| done * 100 / t.max(1)).unwrap_or(0);
+        if pct != last {
+            last = pct;
+            eprint!("\r  {pct}%");
         }
-    };
+    })?;
+    if last != u64::MAX {
+        eprintln!("\r  done.");
+    }
 
     eprintln!("Decoding {}...", args.file.display());
     let audio = decode::decode(&args.file)?;
@@ -59,7 +54,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut last_pct = -1;
-    let cues = transcribe::transcribe(
+    let transcript = transcribe::transcribe(
         &audio,
         &opts,
         &mut |p| {
@@ -70,9 +65,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         },
         &|| false,
     )?;
-    eprintln!("\r  done — {} segments", cues.len());
+    eprintln!("\r  done — {} segments", transcript.cues.len());
 
-    let blocks = reflow::reflow(&cues);
+    let blocks = reflow::reflow(&transcript.cues);
     let title = args
         .file
         .file_stem()
@@ -81,7 +76,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let meta = render::DocumentMeta {
         title,
         duration: audio.duration,
-        backend: format!("CPU ({threads} threads)"),
+        backend: transcript.backend.to_string(),
     };
 
     let docx_path = output::unique_path(&args.file.with_extension("docx"));

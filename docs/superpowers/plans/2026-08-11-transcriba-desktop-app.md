@@ -95,11 +95,18 @@ Add to the test module in `crates/core/src/transcribe.rs`:
     #[test]
     fn transcript_reports_the_cpu_backend_it_ran_on() {
         let Some(opts) = tiny_model_opts() else { return };
-        let t = transcribe(&tone(2.0, 0.2), &opts, &mut |_| {}, &|| false);
-        // Either it transcribed something or it found no speech; both are fine here.
-        // What matters is that a success carries a backend describing this run.
-        if let Ok(transcript) = t {
-            assert!(matches!(transcript.backend, Backend::Cpu { threads } if threads == opts.threads));
+        // ggml-tiny may legitimately find no speech in a synthetic tone, so both
+        // outcomes are acceptable — but each is asserted, so neither passes vacuously.
+        match transcribe(&tone(2.0, 0.2), &opts, &mut |_| {}, &|| false) {
+            Ok(transcript) => assert_eq!(
+                transcript.backend,
+                Backend::Cpu { threads: opts.threads },
+                "a successful run must report the backend it actually used"
+            ),
+            Err(e) => assert!(
+                matches!(e, TranscribeError::NoSpeech),
+                "the only acceptable failure for a clean tone is NoSpeech, got {e:?}"
+            ),
         }
     }
 ```

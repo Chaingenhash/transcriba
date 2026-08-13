@@ -69,20 +69,250 @@ fn is_digital_silence(samples: &[f32]) -> bool {
     (sum_sq / samples.len() as f64).sqrt() < SILENCE_RMS_THRESHOLD
 }
 
+/// Which compute backend actually executed a run.
+///
+/// whisper.cpp has documented paths where a GPU build silently falls back to
+/// CPU, so this is reported rather than assumed — the value is produced by the
+/// code that ran, not by the caller.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Backend {
+    Cpu { threads: usize },
+    Gpu { name: String },
+}
+
+impl std::fmt::Display for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Backend::Cpu { threads: 1 } => write!(f, "CPU (1 thread)"),
+            Backend::Cpu { threads } => write!(f, "CPU ({threads} threads)"),
+            Backend::Gpu { name } => write!(f, "GPU ({name})"),
+        }
+    }
+}
+
+/// A finished transcription plus the backend that produced it.
+#[derive(Debug)]
+pub struct Transcript {
+    pub cues: Vec<Cue>,
+    pub backend: Backend,
+}
+
+/// Detects whether whisper.cpp actually initialized a GPU backend, so the
+/// reported `Backend` reflects what ran rather than what the build flags
+/// merely permitted.
+///
+/// Researched against whisper-rs 0.16.0's own source (see the task report for
+/// the file/line citations): the crate exposes no direct query for the active
+/// backend or device name — no such field or method exists on `WhisperContext`
+/// or `WhisperState`. The only mechanism is whisper.cpp's own log line from
+/// `whisper_backend_init_gpu()` in `whisper.cpp/src/whisper.cpp`:
+/// `WHISPER_LOG_INFO("%s: using %s backend\n", ...)` on success, or
+/// `WHISPER_LOG_INFO("%s: no GPU found\n", ...)` on fallback. Both are routed
+/// through `whisper_log_set`, a raw FFI entry point whisper-rs only re-exports
+/// under its `raw-api` feature (as `whisper_rs::whisper_rs_sys::whisper_log_set`)
+/// — the crate's safe surface (`install_logging_hooks`, gated on its `log`/
+/// `tracing` backend features) exists to forward logs to those crates, not to
+/// let a caller read a specific line back, so it is not used here.
+///
+/// Also load-bearing: this init call happens lazily, inside
+/// `ctx.create_state()` (`whisper_init_state` -> `whisper_backend_init` ->
+/// `whisper_backend_init_gpu`), not inside `WhisperContext::new_with_params`
+/// (which calls the `_no_state` C entry point). The capture below wraps both
+/// calls for that reason.
+#[cfg(feature = "vulkan")]
+mod gpu_detect {
+    use std::ffi::{c_char, c_void, CStr};
+    use std::sync::Mutex;
+
+    /// The exact shape of whisper.cpp's success line, sandwiching the device
+    /// name. Matched literally rather than assumed from the feature flag —
+    /// a wrong "GPU" label sends someone chasing a speedup they never had.
+    const SUCCESS_PREFIX: &str = "whisper_backend_init_gpu: using ";
+    const SUCCESS_SUFFIX: &str = " backend";
+
+    /// whisper.cpp/ggml's log callback slot is process-global — there is
+    /// exactly one, set via `whisper_log_set` — so two `transcribe` calls
+    /// capturing concurrently on different threads would clobber each
+    /// other's callback and `user_data`. This serializes them.
+    static CAPTURE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Pulls the device name out of one whisper.cpp log line, if this is
+    /// specifically the line naming a successfully initialized backend.
+    /// Pure and FFI-free so it can be unit tested directly.
+    fn parse_gpu_device_name(line: &str) -> Option<String> {
+        let rest = line.trim().strip_prefix(SUCCESS_PREFIX)?;
+        let name = rest.strip_suffix(SUCCESS_SUFFIX)?;
+        (!name.is_empty()).then(|| name.to_string())
+    }
+
+    unsafe extern "C" fn capture(
+        _level: whisper_rs::whisper_rs_sys::ggml_log_level,
+        text: *const c_char,
+        user_data: *mut c_void,
+    ) {
+        if text.is_null() {
+            return;
+        }
+        // SAFETY: whisper.cpp passes a NUL-terminated C string it owns for
+        // the duration of this call; we only borrow it to copy out text.
+        let msg = unsafe { CStr::from_ptr(text) }.to_string_lossy();
+        // Preserve whisper.cpp's normal stderr diagnostics: installing our
+        // own callback would otherwise silently swallow them for the
+        // duration of the capture window. Written with `Write::write_all`,
+        // not `eprint!`, and the result discarded: this function is called
+        // synchronously by whisper.cpp through a plain `extern "C"` (not
+        // `"C-unwind"`) function pointer, so a panicking write (which
+        // `eprint!` does on a broken pipe) would unwind straight into C and
+        // risk an abrupt process abort instead of the `Result`-based
+        // handling used everywhere else in this file. A dropped log line on
+        // a broken stderr is an acceptable cost; a process abort is not.
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), msg.as_bytes());
+        if let Some(name) = parse_gpu_device_name(&msg) {
+            // SAFETY: `user_data` was set immediately below from a `&mut
+            // Option<String>` that outlives this call — see `observe`'s
+            // `RestoreLogCallback` guard for why that holds even if `f`
+            // panics.
+            let slot = unsafe { &mut *(user_data as *mut Option<String>) };
+            // Only the first match wins: in practice whisper.cpp prints this
+            // line at most once per backend init, but a slot already set by
+            // an earlier call in the same capture window (e.g. the context
+            // call, before the state call) must not be overwritten by a
+            // coincidental later match.
+            if slot.is_none() {
+                *slot = Some(name);
+            }
+        }
+    }
+
+    /// Restores whisper.cpp's process-global log callback to its default
+    /// sink on drop — including on an unwind out of `observe`'s `f()`.
+    ///
+    /// This exists because the obvious "install, call f, then restore"
+    /// sequence is not panic-safe: a panic inside `f` would skip the
+    /// sequential restore call entirely, leaving whisper.cpp's single
+    /// global callback slot (`whisper.cpp:960`) pointing at `user_data` —
+    /// a raw pointer into `observe`'s caller's stack frame — after that
+    /// frame has been popped. Any log line anywhere in the process from
+    /// then on would make `capture` dereference freed or reused stack
+    /// memory. `Drop::drop` runs on both the normal-return and unwind
+    /// paths, which a plain sequential call does not, so tying the restore
+    /// to this guard's lifetime is what actually keeps the pointer valid
+    /// for exactly as long as it can be invoked.
+    struct RestoreLogCallback;
+
+    impl Drop for RestoreLogCallback {
+        fn drop(&mut self) {
+            // SAFETY: resets whisper.cpp's process-global callback slot to
+            // its default. Confirmed at whisper.cpp:8965
+            // (`g_state.log_callback = log_callback ? log_callback :
+            // whisper_log_callback_default`) that passing `None` substitutes
+            // the default handler rather than leaving the slot dangling, so
+            // this is safe to call unconditionally — including after `f`
+            // panicked, which is the entire point of this guard.
+            unsafe {
+                whisper_rs::whisper_rs_sys::whisper_log_set(None, std::ptr::null_mut());
+            }
+        }
+    }
+
+    /// Runs `f`, capturing whisper.cpp's GPU backend-init log line if it
+    /// fires during the call, and writing the device name into `slot` only
+    /// on that exact positive signal. `slot` is never cleared by this
+    /// function — call it multiple times around the calls that might
+    /// trigger backend init (context construction, then state creation) and
+    /// the first real signal, wherever it lands, survives.
+    pub fn observe<T>(slot: &mut Option<String>, f: impl FnOnce() -> T) -> T {
+        let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: `capture` matches `ggml_log_callback`'s signature exactly,
+        // and `slot` is a valid `&mut Option<String>` for as long as
+        // `_restore` below is alive. `_restore`'s `Drop` impl resets the
+        // callback before this function returns on *every* exit path —
+        // normal return or an unwind propagating out of `f()` — so the
+        // pointer installed here never outlives the frame it points into,
+        // which a sequential "call f, then restore" could not guarantee.
+        unsafe {
+            whisper_rs::whisper_rs_sys::whisper_log_set(
+                Some(capture),
+                slot as *mut Option<String> as *mut c_void,
+            );
+        }
+        let _restore = RestoreLogCallback;
+        f()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn parses_the_success_line() {
+            assert_eq!(
+                parse_gpu_device_name("whisper_backend_init_gpu: using Vulkan0 backend\n"),
+                Some("Vulkan0".to_string())
+            );
+        }
+
+        #[test]
+        fn does_not_match_the_fallback_line() {
+            assert_eq!(
+                parse_gpu_device_name("whisper_backend_init_gpu: no GPU found\n"),
+                None
+            );
+        }
+
+        #[test]
+        fn does_not_match_an_unrelated_line() {
+            assert_eq!(
+                parse_gpu_device_name("whisper_model_load: loading model\n"),
+                None
+            );
+        }
+
+        #[test]
+        fn does_not_match_an_empty_device_name() {
+            assert_eq!(
+                parse_gpu_device_name("whisper_backend_init_gpu: using  backend\n"),
+                None,
+                "an empty device name is not a positive signal"
+            );
+        }
+    }
+}
+
 pub fn transcribe(
     audio: &Audio,
     opts: &Options,
     on_progress: &mut dyn FnMut(i32),
     should_cancel: &dyn Fn() -> bool,
-) -> Result<Vec<Cue>, TranscribeError> {
+) -> Result<Transcript, TranscribeError> {
     if should_cancel() {
         return Err(TranscribeError::Cancelled);
     }
 
+    // With the `vulkan` feature disabled, `use_gpu` is `false` by construction
+    // (see `WhisperContextParameters::default`), so no GPU init is even
+    // attempted and `Backend::Cpu` below is correct without any detection —
+    // no log capture runs on this path.
+    #[cfg(feature = "vulkan")]
+    let mut detected_gpu: Option<String> = None;
+
+    #[cfg(feature = "vulkan")]
+    let ctx = gpu_detect::observe(&mut detected_gpu, || {
+        WhisperContext::new_with_params(&opts.model_path, WhisperContextParameters::default())
+    })
+    .map_err(|e| TranscribeError::Model(e.to_string()))?;
+    #[cfg(not(feature = "vulkan"))]
     let ctx =
         WhisperContext::new_with_params(&opts.model_path, WhisperContextParameters::default())
             .map_err(|e| TranscribeError::Model(e.to_string()))?;
 
+    // Backend init (`whisper_backend_init_gpu`) happens lazily in here, not
+    // in `new_with_params` above — see the `gpu_detect` module doc for why
+    // both calls are wrapped.
+    #[cfg(feature = "vulkan")]
+    let mut state = gpu_detect::observe(&mut detected_gpu, || ctx.create_state())
+        .map_err(|e| TranscribeError::Model(e.to_string()))?;
+    #[cfg(not(feature = "vulkan"))]
     let mut state = ctx
         .create_state()
         .map_err(|e| TranscribeError::Model(e.to_string()))?;
@@ -225,7 +455,24 @@ pub fn transcribe(
     if cues.is_empty() {
         return Err(TranscribeError::NoSpeech);
     }
-    Ok(cues)
+
+    // Reported from what was actually observed, never assumed from the
+    // feature flag: without `vulkan`, GPU init was never attempted, so CPU is
+    // correct by construction; with it, CPU is still the answer unless
+    // whisper.cpp's own log line named a device.
+    #[cfg(feature = "vulkan")]
+    let backend = match detected_gpu {
+        Some(name) => Backend::Gpu { name },
+        None => Backend::Cpu {
+            threads: opts.threads,
+        },
+    };
+    #[cfg(not(feature = "vulkan"))]
+    let backend = Backend::Cpu {
+        threads: opts.threads,
+    };
+
+    Ok(Transcript { cues, backend })
 }
 
 #[cfg(test)]
@@ -366,5 +613,84 @@ mod tests {
         };
         let err = transcribe(&silence(3.0), &opts, &mut |_| {}, &|| false);
         assert!(matches!(err, Err(TranscribeError::NoSpeech)));
+    }
+
+    #[test]
+    fn backend_displays_cpu_thread_count() {
+        assert_eq!(Backend::Cpu { threads: 12 }.to_string(), "CPU (12 threads)");
+        assert_eq!(Backend::Cpu { threads: 1 }.to_string(), "CPU (1 thread)");
+    }
+
+    #[test]
+    fn backend_displays_gpu_name() {
+        assert_eq!(
+            Backend::Gpu {
+                name: "Intel Graphics".into()
+            }
+            .to_string(),
+            "GPU (Intel Graphics)"
+        );
+    }
+
+    // Gated to `not(vulkan)`: with the feature on and a real GPU present, a
+    // successful run may legitimately report `Backend::Gpu` instead — see
+    // `transcript_reports_a_backend_it_actually_observed` below for that
+    // case. This test's job is specifically the default-features guarantee:
+    // no GPU init is ever attempted here, so `Backend::Cpu` must be the only
+    // possible outcome, and a future change that started mislabeling CPU
+    // runs as GPU (or vice versa) would fail it.
+    #[cfg(not(feature = "vulkan"))]
+    #[test]
+    fn transcript_reports_the_cpu_backend_it_ran_on() {
+        let Some(opts) = tiny_model_opts() else {
+            return;
+        };
+        // ggml-tiny may legitimately find no speech in a synthetic tone, so both
+        // outcomes are acceptable — but each is asserted, so neither passes vacuously.
+        match transcribe(&tone(2.0, 0.2), &opts, &mut |_| {}, &|| false) {
+            Ok(transcript) => assert_eq!(
+                transcript.backend,
+                Backend::Cpu {
+                    threads: opts.threads
+                },
+                "a successful run must report the backend it actually used"
+            ),
+            Err(e) => assert!(
+                matches!(e, TranscribeError::NoSpeech),
+                "the only acceptable failure for a clean tone is NoSpeech, got {e:?}"
+            ),
+        }
+    }
+
+    // With `vulkan` on, whether a GPU is actually usable on the machine
+    // running this test is not something the test can control, so both
+    // outcomes are accepted — but each is checked for internal consistency,
+    // so this still guards against the one failure this task cares about: a
+    // `Backend::Gpu` reported without whisper.cpp itself having named a
+    // device (asserted indirectly here; the direct guard is `gpu_detect`'s
+    // own unit tests, which check the parser can't produce a name from
+    // nothing).
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn transcript_reports_a_backend_it_actually_observed() {
+        let Some(opts) = tiny_model_opts() else {
+            return;
+        };
+        match transcribe(&tone(2.0, 0.2), &opts, &mut |_| {}, &|| false) {
+            Ok(transcript) => match transcript.backend {
+                Backend::Cpu { threads } => assert_eq!(
+                    threads, opts.threads,
+                    "a CPU report must carry the thread count actually configured"
+                ),
+                Backend::Gpu { name } => assert!(
+                    !name.trim().is_empty(),
+                    "a GPU report must carry a real device name, not an empty one"
+                ),
+            },
+            Err(e) => assert!(
+                matches!(e, TranscribeError::NoSpeech),
+                "the only acceptable failure for a clean tone is NoSpeech, got {e:?}"
+            ),
+        }
     }
 }
