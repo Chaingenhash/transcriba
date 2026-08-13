@@ -20,23 +20,71 @@ publishes installers on a `v*` tag.
 - **Font resolution from bundled resources**, replacing `CARGO_MANIFEST_DIR` in the app.
 - **The docx/pdf output pair shares one suffix** via `output::unique_path_set`.
 
-## Must happen before tagging v0.1.0
+## Verified 2026-08-13 — no longer open
 
-**A human must drop a real audio file onto the built AppImage and confirm a PDF appears.**
-The bundled font path was broken until late in Plan 2 — `tauri.conf.json` used the list form
-of `resources`, which mangles `../` into literal `_up_` segments — and that bug is unreachable
-from `tauri dev`, because dev reads fonts from the source tree. The fix has been verified by
-extracting the bundle and confirming file placement, but never by a running app.
+**The AppImage works end to end.** A human ran
+`Transcriba_0.1.0_amd64.AppImage --appimage-extract-and-run`, dropped an audio file, and got
+both a `.docx` and a `.pdf`. Three things that had never been exercised were confirmed at once:
 
-**Push the branch so CI runs before any tag is pushed.** CI has never executed. The release
-workflow's first real run should not also be its first attempt at producing artifacts.
-Ranked predictions for what fails first on Windows: vendored libopus compiling under MSVC via
-cmake (unexercised anywhere in this project) and `tauri build --bundles nsis`, roughly tied;
-then `bindgen`/`LIBCLANG_PATH`, where CI only warns rather than failing.
+- **Bundled font resolution.** The list form of `resources` mangled `../` into literal `_up_`
+  segments and broke PDF rendering in every installed copy until two commits before merge. That
+  bug is unreachable from `tauri dev`, which reads fonts from the source tree. A rendered PDF
+  from the bundle is the only proof that exists, and now it does.
+- **`model_store::download()`**, which has zero test coverage — no mock server, and tests must
+  not fetch 574MB. It streamed the model into
+  `~/.local/share/transcriba/models/ggml-large-v3-turbo-q5_0.bin`, verified it, renamed it into
+  place, and the app loaded it. First attempt, in production.
+- **The whole GUI flow**: drop → decode → transcribe → reflow → render → two files beside the
+  input.
 
-**A live webview smoke test and one real Windows NSIS install**, to close the two things
-verified only statically: the CSP added in the final fix wave, and the claim that NSIS installs
-to `%LOCALAPPDATA%\Transcriba` rather than `Program Files`.
+The app correctly reported `use gpu = 0` / `no GPU found`, confirming installers are CPU-only.
+
+**Still open:** one real Windows NSIS install, to close the `%LOCALAPPDATA%\Transcriba` install
+path claim and the CSP added in the final fix wave (both verified statically only).
+
+## Enable the GPU feature — measured, not predicted
+
+Benchmarked 2026-08-13 on a 5-minute Portuguese clip with the production model, same machine
+(Intel Meteor Lake iGPU, Mesa, 12 threads):
+
+| Build | Wall clock | Reported backend | Words |
+|---|---|---|---|
+| default (CPU) | **431s** | `CPU (12 threads)` | 638 |
+| `--features vulkan` | **110s** | `GPU (Vulkan0)` | 637 |
+
+**3.9× faster.** The plan predicted 1.5–2× on integrated graphics and set an off-ramp at
+"under 20%, leave it off". That was wrong in the good direction: a 58-minute recording drops
+from ~25 minutes to roughly 6. Word counts differ by one, so nothing is traded for the speed.
+
+This also validated `gpu_detect` on real hardware: whisper.cpp logged
+`whisper_backend_init_gpu: using Vulkan0 backend` and the log-line detection reported
+`GPU (Vulkan0)` in the document header — the mechanism works outside unit tests.
+
+`vulkan-headers` is now installed, so `--features vulkan` builds with no `VULKAN_SDK`
+workaround.
+
+**The remaining decision is per-platform, not a flag flip.** whisper.cpp's Vulkan backend is
+still expected to fail to register on Windows MSVC static builds, so enabling it means: Linux
+releases with `vulkan`, Windows CPU-only until proven otherwise, and a runtime force-CPU
+setting for colleagues with misbehaving drivers (which the spec promises and nothing
+implements).
+
+## Memory: the >8GB assumption is optimistic, not safe
+
+A GUI run was OOM-killed on this 15GB machine (`anon-rss` 1.37GB, `oom_score_adj` 200 because
+it was launched from Nautilus, which marks its children as preferred victims). The immediate
+cause was concurrent load — a release build and two benchmarks running alongside it — but the
+underlying exposure is real:
+
+- `decode` copies the whole decoded signal for resampling (`let input_data = vec![input.to_vec()]`),
+  so peak is roughly **2× the sample data** on top of the model. A 90-minute recording is ~2.4GB.
+- A colleague on an 8GB laptop with Teams and a browser open is genuinely at risk, and the
+  failure mode is a silent kill with no error message.
+
+Fix: take the `Vec<f32>` by value and move it into the resampler instead of cloning. Also worth
+considering: launching from a file manager inherits `oom_score_adj=200`, so the app is the
+kernel's first choice under pressure — a note in the README, or an explicit `oom_score_adj`
+reset, would help.
 
 ## Architecture — the top item
 
