@@ -24,7 +24,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg cmake libclang-dev \
+          sudo apt-get install -y cmake libclang-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Verify Windows build tools
