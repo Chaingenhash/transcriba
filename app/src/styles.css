@@ -1,64 +1,302 @@
+/*
+ * Transcriba turns spoken meetings into an official written record, so the
+ * interface is set in the same face as the document it produces — Liberation
+ * Serif, which ships in this app's resources for the PDF renderer. Where it
+ * isn't installed (Windows), Georgia takes over; nothing is fetched, which the
+ * strict CSP requires anyway.
+ *
+ * Timestamps and file paths are data, so they get a monospace face: this app
+ * deals in times almost everywhere, and aligning them is worth a typeface.
+ */
+
 :root {
-  --fg: #1c1c1e;
-  --muted: #6b6b70;
-  --line: #cfcfd4;
-  --accent: #2f6f4f;
-  --error: #8c2f2f;
-  --bg: #fbfbfc;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Cool paper rather than cream — this is an administrative record, not a
+     letterpress poster. */
+  --paper: #f6f7f6;
+  --card: #ffffff;
+  --ink: #191c1a;
+  --muted: #6b716d;
+  --rule: #d5d9d6;
+  /* One accent, used only to mean "transcribed". Desaturated petrol: reads as
+     institutional rather than as a brand colour. */
+  --done: #2f5d62;
+  --pending: #c9cdca;
+  --alert: #8c2f2f;
+
+  --serif: "Liberation Serif", Georgia, "Times New Roman", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Liberation Mono", "DejaVu Sans Mono", monospace;
+
+  color-scheme: light;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 body {
   margin: 0;
-  color: var(--fg);
-  background: var(--bg);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
 }
 
 #app {
-  max-width: 640px;
+  max-width: 660px;
   margin: 0 auto;
-  padding: 24px 20px;
+  padding: 28px 24px 40px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
 }
+
+/* --- masthead ------------------------------------------------------------ */
+
+.masthead h1 {
+  font-family: var(--serif);
+  font-size: 26px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+.masthead p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* --- drop zone ----------------------------------------------------------- */
 
 .drop {
-  border: 2px dashed var(--line);
-  border-radius: 10px;
-  padding: 36px 20px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 30px 20px;
   text-align: center;
-  background: #fff;
-  transition: border-color 120ms, background 120ms;
 }
 
-.drop.busy { opacity: 0.6; pointer-events: none; }
-.drop-title { margin: 0 0 14px; color: var(--muted); }
+.drop.busy {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.drop-title {
+  font-family: var(--serif);
+  font-size: 17px;
+  margin: 0 0 14px;
+  color: var(--muted);
+}
 
 button {
   font: inherit;
-  padding: 8px 16px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #fff;
+  font-size: 14px;
+  padding: 7px 15px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--card);
+  color: var(--ink);
   cursor: pointer;
 }
 
-button:hover { border-color: var(--fg); }
+button:hover:not(:disabled) {
+  border-color: var(--ink);
+}
 
-.controls { display: flex; align-items: center; gap: 10px; }
-.controls label { color: var(--muted); }
-select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+button:disabled {
+  color: var(--pending);
+  cursor: default;
+}
 
-.status { display: flex; flex-direction: column; gap: 10px; }
-#phase { margin: 0; }
-progress { width: 100%; height: 14px; }
+:focus-visible {
+  outline: 2px solid var(--done);
+  outline-offset: 2px;
+}
 
-.result { padding: 14px 16px; border-radius: 8px; border: 1px solid var(--line); background: #fff; }
-.result p { margin: 0 0 8px; }
-.result p:last-child { margin-bottom: 0; }
-.result.ok { border-left: 4px solid var(--accent); }
-.result.error { border-left: 4px solid var(--error); color: var(--error); }
-.paths { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); word-break: break-all; }
+/* --- language ------------------------------------------------------------ */
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.controls label {
+  color: var(--muted);
+}
+
+select {
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--card);
+  color: var(--ink);
+}
+
+/* --- running job -------------------------------------------------------- */
+
+.status {
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 18px 20px;
+}
+
+.job-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  margin: 0;
+  word-break: break-all;
+}
+
+.job-facts {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Model download only: there is no audio length yet, so no sections to show. */
+.prep {
+  height: 2px;
+  background: var(--rule);
+  margin: 18px 0 0;
+  overflow: hidden;
+}
+
+.prep-fill {
+  height: 100%;
+  width: 0;
+  background: var(--done);
+  transition: width 240ms linear;
+}
+
+/* The document's outline, one row per 10 minutes of audio.
+ *
+ * Deliberately not progress bars. A bar per section reads as a dashboard, and
+ * an unfilled bar reads as a filled bar of another colour. Instead each row
+ * washes in from the left as transcription reaches it, so the screen behaves
+ * like a page being written: the stretches that exist as text are the ones
+ * that have been inked. */
+.spine {
+  list-style: none;
+  margin: 20px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.spine li {
+  position: relative;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--rule);
+  overflow: hidden;
+}
+
+.spine .fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: color-mix(in srgb, var(--done) 15%, transparent);
+  transition: width 240ms linear;
+}
+
+/* The leading edge marks where transcription currently is, so it belongs only
+   to the section being worked on. A zero-width element still paints its
+   border, so putting this on `.fill` unconditionally would draw a marker down
+   the left of every not-yet-started section. */
+.spine li[data-state="running"] .fill {
+  border-right: 2px solid color-mix(in srgb, var(--done) 60%, transparent);
+}
+
+.spine .range {
+  position: relative;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  transition: color 200ms ease;
+}
+
+/* The one moment of emphasis on the screen, and it means something precise:
+   that stretch of the recording is now written down. */
+.spine li[data-state="done"] .range {
+  color: var(--ink);
+}
+
+.job-foot {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 4px 14px;
+  margin: 16px 0 0;
+}
+
+.phase {
+  margin: 0;
+  font-size: 14px;
+}
+
+.eta {
+  grid-column: 1;
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  min-height: 1.2em;
+}
+
+.job-foot button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+/* --- result ------------------------------------------------------------- */
+
+.result {
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule);
+  border-radius: 4px;
+  padding: 16px 18px;
+}
+
+.result p {
+  margin: 0 0 6px;
+}
+
+.result p:last-child {
+  margin-bottom: 0;
+}
+
+.result.ok {
+  border-left-color: var(--done);
+}
+
+.result.error {
+  border-left-color: var(--alert);
+  color: var(--alert);
+}
+
+.result strong {
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 400;
+}
+
+.paths {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

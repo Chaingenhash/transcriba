@@ -7,19 +7,45 @@
   </head>
   <body>
     <main id="app">
+      <header class="masthead">
+        <h1>Transcriba</h1>
+      </header>
+
       <div id="drop" class="drop">
-        <p class="drop-title">Arraste um ficheiro de áudio para aqui</p>
+        <p class="drop-title">Arraste uma gravação para aqui</p>
         <button id="pick" type="button">Escolher ficheiro</button>
       </div>
+
       <section id="controls" class="controls">
-        <label for="lang">Idioma</label>
+        <label for="lang">Idioma falado</label>
         <select id="lang"></select>
       </section>
+
       <section id="status" class="status" hidden>
-        <p id="phase"></p>
-        <progress id="bar" max="100" value="0"></progress>
-        <button id="cancel" type="button" disabled>Cancelar</button>
+        <header class="job">
+          <p id="job-name" class="job-name"></p>
+          <p id="job-facts" class="job-facts"></p>
+        </header>
+
+        <!-- Shown only while the model downloads, where there is no audio
+             length yet and so no sections to lay out. Replaced by the spine
+             below as soon as the length is known; the two never coexist. -->
+        <div id="prep" class="prep" hidden>
+          <div id="prep-fill" class="prep-fill"></div>
+        </div>
+
+        <!-- The sections the finished document will have, one row each.
+             `reflow` emits a heading every 10 minutes of audio, so this is the
+             real outline of the output, filling as transcription reaches it. -->
+        <ol id="spine" class="spine" hidden></ol>
+
+        <footer class="job-foot">
+          <p id="phase" class="phase" aria-live="polite"></p>
+          <p id="eta" class="eta"></p>
+          <button id="cancel" type="button" disabled>Cancelar</button>
+        </footer>
       </section>
+
       <section id="result" class="result" hidden aria-live="polite"></section>
     </main>
     <script type="module" src="/src/main.ts"></script>

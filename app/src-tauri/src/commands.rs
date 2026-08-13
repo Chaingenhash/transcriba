@@ -14,9 +14,21 @@ use transcriba_core::{decode, model_store, output, reflow, render, transcribe};
 #[derive(Serialize, Clone)]
 #[serde(tag = "phase", rename_all = "camelCase")]
 pub enum Progress {
-    Preparing { pct: u8 },
+    Preparing {
+        pct: u8,
+    },
     Decoding,
-    Transcribing { pct: u8 },
+    /// Emitted once the audio's length is known, before transcription starts.
+    ///
+    /// The UI uses this to lay out the sections the finished document will have
+    /// — `reflow` emits a heading every 600s of audio — so the wait shows the
+    /// shape of the document being written rather than a bare percentage.
+    Decoded {
+        duration_secs: f64,
+    },
+    Transcribing {
+        pct: u8,
+    },
     Rendering,
 }
 
@@ -168,6 +180,10 @@ fn run(
     if cancel.load(Ordering::Relaxed) {
         return Err(CommandError::cancelled());
     }
+
+    let _ = progress.send(Progress::Decoded {
+        duration_secs: audio.duration,
+    });
 
     let opts = transcribe::Options {
         language: language.to_string(),

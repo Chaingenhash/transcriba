@@ -5,6 +5,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 export type Progress =
   | { phase: "preparing"; pct: number }
   | { phase: "decoding" }
+  /** The audio's length, known once decoding finishes and before transcription
+   * starts. The UI lays out the finished document's sections from it. */
+  | { phase: "decoded"; durationSecs: number }
   | { phase: "transcribing"; pct: number }
   | { phase: "rendering" };
 
