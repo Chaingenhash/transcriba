@@ -11,7 +11,7 @@ nothing leaves your machine.
 - **Linux:** download the `.AppImage` from the release, make it executable
   (`chmod +x Transcriba_*.AppImage`), and run it. No installation step — it's a single
   file you can put anywhere.
-- **Windows:** download and run the `.exe`/`.msi` installer from the release.
+- **Windows:** download and run the `.exe` installer from the release.
 
   Windows will very likely show a blue screen titled **"Windows protected your PC"**, with
   a greyed-out button. This is Windows SmartScreen reacting to an installer that isn't
@@ -57,8 +57,11 @@ TRANSCRIBA_MODEL_PATH=/home/you/models/ggml-large-v3-turbo-q5_0.bin ./Transcriba
 ```powershell
 # Windows (PowerShell)
 $env:TRANSCRIBA_MODEL_PATH = "C:\Users\you\models\ggml-large-v3-turbo-q5_0.bin"
-& "C:\Program Files\Transcriba\transcriba.exe"
+& "$env:LOCALAPPDATA\Transcriba\Transcriba.exe"
 ```
+
+(The installer's default mode is per-user, so it installs under `%LOCALAPPDATA%\Transcriba`,
+not `C:\Program Files`.)
 
 When this variable is set and the file passes verification, no download is attempted at
 all.
@@ -70,15 +73,31 @@ all.
 - Rust (stable)
 - `cmake` and `libclang` (needed to build `whisper-rs`'s vendored whisper.cpp)
 - Node.js and npm
-- On Linux: `webkit2gtk-4.1`, `libsoup-3.0`, and `javascriptcoregtk-4.1` (Tauri's
-  webview dependencies)
+- On Linux, the exact packages `ci.yml` installs on the runner (Tauri's webview
+  dependencies, plus the AppImage icon/tray libraries):
+
+  ```bash
+  sudo apt-get update
+  sudo apt-get install -y cmake libclang-dev \
+    libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+  ```
 
 ### Build and test
 
 ```bash
-cargo test --workspace
-cd app && npx tauri dev      # run the desktop app
-cd app && npx tauri build --bundles appimage   # produce a Linux AppImage
+cargo test --workspace   # skips the whisper integration tests — see below
+cd app && npm ci                                # install pinned frontend deps
+cd app && npx tauri dev                          # run the desktop app
+cd app && npx tauri build --bundles appimage    # produce a Linux AppImage
+```
+
+`cargo test --workspace` alone does not exercise the whisper integration tests —
+they need a real model file and are skipped otherwise, silently, with no failure
+to flag it. Point `TRANSCRIBA_TEST_MODEL` at a `ggml-tiny.bin` (or any valid ggml
+model) to run the full suite, matching what `ci.yml` does:
+
+```bash
+TRANSCRIBA_TEST_MODEL=/path/to/ggml-tiny.bin cargo test --workspace
 ```
 
 If the AppImage build fails with `strip`/`.relr.dyn` errors, retry with
