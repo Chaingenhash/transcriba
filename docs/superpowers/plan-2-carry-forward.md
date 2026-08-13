@@ -175,3 +175,6 @@ distinguish oversight from unstated context.
 reuses any of it, note that Task 5's code block still shows `symphonia = "0.5"`,
 `rubato = "0.16"`, the old `Fft::new` signature and `IoError => break`, and Task 6 Step 1
 omits `default-features = false`. Read the code, not the plan.
+
+> **Superseded by [plan-3-carry-forward.md](plan-3-carry-forward.md).** Kept as the record of
+> what Plan 1 handed to Plan 2; see that file for current state and open work.
