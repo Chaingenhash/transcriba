@@ -81,7 +81,7 @@ fn run(
 
     let mut last = u8::MAX;
     let model_path = model_store::ensure_available(&mut |done, total| {
-        let pct = total.map_or(0, |t| (done * 100 / t.max(1)) as u8);
+        let pct = total.map_or(0, |t| (done * 100 / t.max(1)).min(100) as u8);
         if pct != last {
             last = pct;
             let _ = progress.send(Progress::Preparing { pct });
@@ -124,14 +124,14 @@ fn run(
         backend: transcript.backend.to_string(),
     };
 
-    let docx_path = output::unique_path(&input.with_extension("docx"));
+    let paths = output::unique_path_set(input, &["docx", "pdf"]);
+    let (docx_path, pdf_path) = (paths[0].clone(), paths[1].clone());
     std::fs::write(
         &docx_path,
         render::docx::render_docx(&blocks, &meta).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("could not write {}: {e}", docx_path.display()))?;
 
-    let pdf_path = output::unique_path(&input.with_extension("pdf"));
     let fonts = font_dir(app)?;
     std::fs::write(
         &pdf_path,
