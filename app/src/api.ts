@@ -39,9 +39,8 @@ export async function pickFile(): Promise<string | null> {
  */
 export async function onFilesDropped(handler: (paths: string[]) => void): Promise<void> {
   await getCurrentWebviewWindow().onDragDropEvent((event) => {
-    const payload = event.payload as { type: string; paths?: string[] };
-    if (payload.type === "drop" && payload.paths?.length) {
-      handler(payload.paths);
+    if (event.payload.type === "drop" && event.payload.paths.length > 0) {
+      handler(event.payload.paths);
     }
   });
 }

@@ -47,7 +47,7 @@ function showError(message: string) {
   status.hidden = true;
   result.hidden = false;
   result.className = "result error";
-  result.textContent = message;
+  result.textContent = `Erro: ${message}`;
 }
 
 function showDone(o: Outcome) {
