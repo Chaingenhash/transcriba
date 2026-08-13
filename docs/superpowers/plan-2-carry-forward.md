@@ -135,6 +135,23 @@ systemd-run --user --collect --unit=transcriba-e2e \
 
 Whoever wires release verification needs this, or a real terminal.
 
+## Correction — frontendDist is not actually required for `cargo clippy`/`cargo test`
+
+Task 8's brief claimed the CI frontend-build step must precede the Rust steps because
+`cargo clippy --all-targets` compiles the app crate, whose `tauri::generate_context!` reads
+`tauri.conf.json` and requires `frontendDist` (`../dist`) to exist. That is wrong for the
+plain `cargo clippy`/`cargo test` path: the existence check in
+`tauri-codegen-2.6.3/src/context.rs:176-193` only runs in the `else` branch, which is skipped
+whenever `dev && config.build.dev_url.is_some()`; `dev` is
+`cfg!(not(feature = "custom-protocol"))` (`tauri-macros-2.6.3/src/context.rs:155`), and
+`app/src-tauri/Cargo.toml` never enables `custom-protocol` — only the Tauri CLI injects it via
+`--features tauri/custom-protocol` at build time. So `cargo clippy`/`cargo test` never hit the
+check regardless of build order. The dependency only genuinely holds for `release.yml`'s
+`npx tauri build`, which in turn auto-runs `beforeBuildCommand: "npm run build"` per
+`tauri.conf.json:8` on its own. `ci.yml` still builds the frontend before the Rust steps —
+that ordering is harmless and catches TypeScript regressions nothing else in CI does — but
+it is hygiene, not a hard dependency, and should not be cited as one.
+
 ## Process notes
 
 **Record resolved dependency versions before anything depends on them.** Every version in

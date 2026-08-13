@@ -52,6 +52,15 @@ jobs:
             -OutFile tests/fixtures/ggml-tiny.bin
         shell: pwsh
 
+      # Type-checks the frontend, which nothing else in this workflow does. Not
+      # a hard dependency for what follows: `cargo clippy`/`cargo test` do NOT
+      # require `dist` to exist, because `generate_context!` short-circuits the
+      # frontendDist existence check whenever `dev && devUrl.is_some()`
+      # (tauri-codegen-2.6.3/src/context.rs:176-193), and `dev` is
+      # `cfg!(not(feature = "custom-protocol"))` (tauri-macros-2.6.3/src/context.rs:155)
+      # — a feature plain `cargo clippy`/`cargo test` never enable (only the
+      # Tauri CLI passes `--features tauri/custom-protocol`). Kept before the
+      # Rust steps anyway for hygiene and to mirror release.yml's structure.
       - name: Build the frontend
         working-directory: app
         run: |
