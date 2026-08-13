@@ -160,6 +160,14 @@ pub fn ensure_available(
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::Mutex;
+
+    /// `TRANSCRIBA_MODEL_PATH` is process-global, and cargo runs tests in this
+    /// binary concurrently by default. Any test that sets and removes it must hold
+    /// this lock for the duration of that manipulation, or two such tests can
+    /// interleave: one observes the other's value, or finds the variable already
+    /// removed before its own assertion runs.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("transcriba-tests");
@@ -204,6 +212,7 @@ mod tests {
 
     #[test]
     fn env_override_takes_precedence_when_valid() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut bytes = vec![0u8; MIN_MODEL_BYTES as usize + 1];
         bytes[..4].copy_from_slice(b"lmgg");
         let path = temp_file("override.bin", &bytes);
@@ -274,6 +283,7 @@ mod tests {
 
     #[test]
     fn ensure_available_returns_the_override_without_downloading() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut bytes = vec![0u8; MIN_MODEL_BYTES as usize + 1];
         bytes[..4].copy_from_slice(b"lmgg");
         let path = temp_file("ensure-override.bin", &bytes);

@@ -16,6 +16,18 @@ export interface Outcome {
   paragraphs: number;
 }
 
+/**
+ * The shape `transcribe_file`/`cancel_job` reject with on failure (see
+ * `CommandError` in `app/src-tauri/src/commands.rs`). `kind` lets the caller
+ * tell a user-requested cancellation apart from every other failure without
+ * matching on English message text. Tauri rejects the invoke promise with this
+ * object as-is (deserialized from the command's JSON `Err`), not with a string.
+ */
+export interface CommandError {
+  kind: "cancelled" | "failed";
+  message: string;
+}
+
 const AUDIO_EXTENSIONS = ["mp3", "m4a", "mp4", "wav", "flac", "ogg", "opus", "mpeg", "mpga", "aac"];
 
 export function looksLikeAudio(path: string): boolean {

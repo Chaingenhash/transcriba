@@ -30,6 +30,55 @@ pub struct Outcome {
     pub paragraphs: usize,
 }
 
+/// The frontend needs to tell "the user pressed Cancel" apart from every other
+/// failure: cancellation isn't an error and must not be shown as one (red,
+/// "Erro: ..."). A bare `String` error can't carry that distinction across IPC,
+/// so commands return this tagged shape instead. `kind` serializes as
+/// `"cancelled" | "failed"` so `main.ts` can discriminate without parsing text;
+/// `message` is unused for `Cancelled` on the frontend but kept for logging/debug.
+///
+/// This only tags cancellation vs. everything else. Typed errors for the rest of
+/// the library's failure modes (so the UI could show Portuguese messages instead
+/// of whisper's/decode's English ones) are Plan 3 work.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandError {
+    pub kind: ErrorKind,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ErrorKind {
+    Cancelled,
+    Failed,
+}
+
+impl CommandError {
+    fn failed(message: impl Into<String>) -> Self {
+        Self {
+            kind: ErrorKind::Failed,
+            message: message.into(),
+        }
+    }
+
+    fn cancelled() -> Self {
+        Self {
+            kind: ErrorKind::Cancelled,
+            message: transcribe::TranscribeError::Cancelled.to_string(),
+        }
+    }
+}
+
+impl From<transcribe::TranscribeError> for CommandError {
+    fn from(e: transcribe::TranscribeError) -> Self {
+        match e {
+            transcribe::TranscribeError::Cancelled => CommandError::cancelled(),
+            other => CommandError::failed(other.to_string()),
+        }
+    }
+}
+
 // This literal "assets/fonts" must match how `tauri.conf.json`'s `bundle.resources`
 // places the files, which is why that config uses the *map* form
 // (`{ "../../assets/fonts/*": "assets/fonts" }`) rather than a plain list. The list form
@@ -68,13 +117,17 @@ pub async fn transcribe_file(
     language: String,
     job_id: String,
     progress: Channel<Progress>,
-) -> Result<Outcome, String> {
+) -> Result<Outcome, CommandError> {
     let cancel = jobs.flag(&job_id);
     let result = tauri::async_runtime::spawn_blocking(move || {
         run(&app, &path, &language, &cancel, &progress)
     })
     .await
-    .unwrap_or_else(|e| Err(format!("the transcription task panicked: {e}")));
+    .unwrap_or_else(|e| {
+        Err(CommandError::failed(format!(
+            "the transcription task panicked: {e}"
+        )))
+    });
     jobs.finish(&job_id);
     result
 }
@@ -85,7 +138,7 @@ fn run(
     language: &str,
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     progress: &Channel<Progress>,
-) -> Result<Outcome, String> {
+) -> Result<Outcome, CommandError> {
     use std::sync::atomic::Ordering;
     let input = Path::new(path);
 
@@ -97,10 +150,24 @@ fn run(
             let _ = progress.send(Progress::Preparing { pct });
         }
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| CommandError::failed(e.to_string()))?;
+
+    // `ensure_available` and `decode` never consult `cancel` — they're calls into
+    // library code whose signatures this fix does not change (see Plan 3 for
+    // threading a cancellation callback into them). Checking the flag at each phase
+    // boundary is the minimum viable fix: on first run the Cancel button spends the
+    // entire 574MB download and decode doing nothing otherwise, which is worse than
+    // an unresponsive button — it's a button that looks like it works but doesn't.
+    if cancel.load(Ordering::Relaxed) {
+        return Err(CommandError::cancelled());
+    }
 
     let _ = progress.send(Progress::Decoding);
-    let audio = decode::decode(input).map_err(|e| e.to_string())?;
+    let audio = decode::decode(input).map_err(|e| CommandError::failed(e.to_string()))?;
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err(CommandError::cancelled());
+    }
 
     let opts = transcribe::Options {
         language: language.to_string(),
@@ -120,8 +187,7 @@ fn run(
             }
         },
         &|| cancel.load(Ordering::Relaxed),
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let _ = progress.send(Progress::Rendering);
     let blocks = reflow::reflow(&transcript.cues);
@@ -138,16 +204,18 @@ fn run(
     let (docx_path, pdf_path) = (paths[0].clone(), paths[1].clone());
     std::fs::write(
         &docx_path,
-        render::docx::render_docx(&blocks, &meta).map_err(|e| e.to_string())?,
+        render::docx::render_docx(&blocks, &meta)
+            .map_err(|e| CommandError::failed(e.to_string()))?,
     )
-    .map_err(|e| format!("could not write {}: {e}", docx_path.display()))?;
+    .map_err(|e| CommandError::failed(format!("could not write {}: {e}", docx_path.display())))?;
 
-    let fonts = font_dir(app)?;
+    let fonts = font_dir(app).map_err(CommandError::failed)?;
     std::fs::write(
         &pdf_path,
-        render::pdf::render_pdf(&blocks, &meta, &fonts).map_err(|e| e.to_string())?,
+        render::pdf::render_pdf(&blocks, &meta, &fonts)
+            .map_err(|e| CommandError::failed(e.to_string()))?,
     )
-    .map_err(|e| format!("could not write {}: {e}", pdf_path.display()))?;
+    .map_err(|e| CommandError::failed(format!("could not write {}: {e}", pdf_path.display())))?;
 
     Ok(Outcome {
         docx: docx_path.display().to_string(),
