@@ -8,12 +8,34 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # whisper-rs-sys never passes GGML_NATIVE, so ggml defaults it to ON
+    # (whisper.cpp/ggml/CMakeLists.txt:106,120) and compiles libwhisper with
+    # `-march=native` — tuned for whichever runner happened to build it.
+    # rust-cache then restores that binary onto a runner of a different CPU
+    # generation and ggml dies on the first kernel it dispatches: run
+    # 31701641637 printed "AMX is not ready to be used!" during
+    # whisper_model_load and aborted with `signal: 4, SIGILL: illegal
+    # instruction`, on a docs-only commit whose target/ was a full cache hit.
+    #
+    # OFF flips ggml to its explicit baseline instead (INS_ENB=ON:
+    # SSE4.2/AVX/AVX2/BMI2/FMA/F16C, with AVX512 and AMX off — same file,
+    # lines 138-166), which is Haswell-era and portable across the whole
+    # runner fleet. whisper-rs-sys's build.rs forwards every GGML_*, CMAKE_*
+    # and WHISPER_* env var to cmake, which is what makes this reachable.
+    env:
+      GGML_NATIVE: "OFF"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # The cache key covers Cargo.lock and the toolchain but NOT GGML_NATIVE,
+      # and whisper-rs-sys emits no rerun-if-env-changed for it, so a cached
+      # native libwhisper would survive the setting above. Bump this prefix
+      # whenever the native/instruction-set flags change.
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-ggml-portable
       - uses: actions/setup-node@v4
         with:
           node-version: 22

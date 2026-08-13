@@ -23,10 +23,21 @@ jobs:
           - os: windows-latest
             bundles: nsis
     runs-on: ${{ matrix.os }}
+    # Portability, not just CI hygiene: ggml defaults GGML_NATIVE to ON and
+    # would bake `-march=native` for the build runner's CPU into the shipped
+    # AppImage and installer, so a colleague on an older machine gets a SIGILL
+    # instead of a transcript. See ci.yml for the full failure and for what OFF
+    # substitutes (an AVX2-era baseline). Keep both workflows in step.
+    env:
+      GGML_NATIVE: "OFF"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Bump this prefix whenever the native/instruction-set flags change —
+      # nothing else invalidates a cached libwhisper built with the old ones.
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-ggml-portable
       - uses: actions/setup-node@v4
         with:
           node-version: 22
