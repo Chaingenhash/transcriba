@@ -21,3 +21,17 @@ num_cpus = "1"
 [dev-dependencies]
 zip = "2"
 pdf-extract = "0.12"
+
+[features]
+default = []
+# Opportunistic Vulkan. Chosen over CUDA because the target machines are office
+# laptops with Intel integrated graphics: one Vulkan build covers Intel, AMD and
+# NVIDIA, whereas CUDA needs its toolkit at build time and only helps rare
+# NVIDIA machines. Expected to be unusable on Windows MSVC static builds
+# (whisper.cpp silently fails to register the backend there) — see the spec.
+# `raw-api` is pulled in alongside it (not for its own sake) because it is the
+# only way to reach `whisper_log_set` and read back whisper.cpp's own
+# backend-init log line — see transcribe.rs's `gpu_detect` module for why
+# that, rather than assuming success from this feature flag, is the actual
+# source of truth for whether the GPU was really used.
+vulkan = ["whisper-rs/vulkan", "whisper-rs/raw-api"]
