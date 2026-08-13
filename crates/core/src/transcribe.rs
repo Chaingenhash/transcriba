@@ -158,13 +158,20 @@ mod gpu_detect {
         let msg = unsafe { CStr::from_ptr(text) }.to_string_lossy();
         // Preserve whisper.cpp's normal stderr diagnostics: installing our
         // own callback would otherwise silently swallow them for the
-        // duration of the capture window.
-        eprint!("{msg}");
+        // duration of the capture window. Written with `Write::write_all`,
+        // not `eprint!`, and the result discarded: this function is called
+        // synchronously by whisper.cpp through a plain `extern "C"` (not
+        // `"C-unwind"`) function pointer, so a panicking write (which
+        // `eprint!` does on a broken pipe) would unwind straight into C and
+        // risk an abrupt process abort instead of the `Result`-based
+        // handling used everywhere else in this file. A dropped log line on
+        // a broken stderr is an acceptable cost; a process abort is not.
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), msg.as_bytes());
         if let Some(name) = parse_gpu_device_name(&msg) {
             // SAFETY: `user_data` was set immediately below from a `&mut
-            // Option<String>` that outlives this call — `observe` holds the
-            // capture lock and does not return until after the matching
-            // `whisper_log_set(None, ..)` call below has run.
+            // Option<String>` that outlives this call — see `observe`'s
+            // `RestoreLogCallback` guard for why that holds even if `f`
+            // panics.
             let slot = unsafe { &mut *(user_data as *mut Option<String>) };
             // Only the first match wins: in practice whisper.cpp prints this
             // line at most once per backend init, but a slot already set by
@@ -173,6 +180,37 @@ mod gpu_detect {
             // coincidental later match.
             if slot.is_none() {
                 *slot = Some(name);
+            }
+        }
+    }
+
+    /// Restores whisper.cpp's process-global log callback to its default
+    /// sink on drop — including on an unwind out of `observe`'s `f()`.
+    ///
+    /// This exists because the obvious "install, call f, then restore"
+    /// sequence is not panic-safe: a panic inside `f` would skip the
+    /// sequential restore call entirely, leaving whisper.cpp's single
+    /// global callback slot (`whisper.cpp:960`) pointing at `user_data` —
+    /// a raw pointer into `observe`'s caller's stack frame — after that
+    /// frame has been popped. Any log line anywhere in the process from
+    /// then on would make `capture` dereference freed or reused stack
+    /// memory. `Drop::drop` runs on both the normal-return and unwind
+    /// paths, which a plain sequential call does not, so tying the restore
+    /// to this guard's lifetime is what actually keeps the pointer valid
+    /// for exactly as long as it can be invoked.
+    struct RestoreLogCallback;
+
+    impl Drop for RestoreLogCallback {
+        fn drop(&mut self) {
+            // SAFETY: resets whisper.cpp's process-global callback slot to
+            // its default. Confirmed at whisper.cpp:8965
+            // (`g_state.log_callback = log_callback ? log_callback :
+            // whisper_log_callback_default`) that passing `None` substitutes
+            // the default handler rather than leaving the slot dangling, so
+            // this is safe to call unconditionally — including after `f`
+            // panicked, which is the entire point of this guard.
+            unsafe {
+                whisper_rs::whisper_rs_sys::whisper_log_set(None, std::ptr::null_mut());
             }
         }
     }
@@ -186,23 +224,20 @@ mod gpu_detect {
     pub fn observe<T>(slot: &mut Option<String>, f: impl FnOnce() -> T) -> T {
         let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // SAFETY: `capture` matches `ggml_log_callback`'s signature exactly,
-        // and `slot` is a valid `&mut Option<String>` for the entire call to
-        // `f()` below, which happens before this stack frame (and thus
-        // `slot`) goes away.
+        // and `slot` is a valid `&mut Option<String>` for as long as
+        // `_restore` below is alive. `_restore`'s `Drop` impl resets the
+        // callback before this function returns on *every* exit path —
+        // normal return or an unwind propagating out of `f()` — so the
+        // pointer installed here never outlives the frame it points into,
+        // which a sequential "call f, then restore" could not guarantee.
         unsafe {
             whisper_rs::whisper_rs_sys::whisper_log_set(
                 Some(capture),
                 slot as *mut Option<String> as *mut c_void,
             );
         }
-        let result = f();
-        // SAFETY: restores whisper.cpp's default log sink (NULL callback ->
-        // `whisper_log_callback_default`, which prints to stderr) so nothing
-        // outside this capture window is affected.
-        unsafe {
-            whisper_rs::whisper_rs_sys::whisper_log_set(None, std::ptr::null_mut());
-        }
-        result
+        let _restore = RestoreLogCallback;
+        f()
     }
 
     #[cfg(test)]
@@ -234,7 +269,7 @@ mod gpu_detect {
         }
 
         #[test]
-        fn does_not_match_a_truncated_prefix() {
+        fn does_not_match_an_empty_device_name() {
             assert_eq!(
                 parse_gpu_device_name("whisper_backend_init_gpu: using  backend\n"),
                 None,
