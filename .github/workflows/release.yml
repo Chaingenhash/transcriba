@@ -35,9 +35,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       # Bump this prefix whenever the native/instruction-set flags change —
       # nothing else invalidates a cached libwhisper built with the old ones.
+      # `shared-key` replaces the per-job cache key, so bundle-dryrun.yml — which
+      # runs these same build steps on demand — shares this cache instead of
+      # warming a second copy. A green dry run therefore leaves a tag build with
+      # nothing to rebuild but the crates that changed.
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v1-rust-ggml-portable
+          shared-key: release-bundle
       - uses: actions/setup-node@v5
         with:
           node-version: 22

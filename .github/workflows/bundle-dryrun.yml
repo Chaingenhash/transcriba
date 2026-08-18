@@ -1,0 +1,95 @@
+# Builds an installer on demand WITHOUT cutting a release.
+#
+# ci.yml compiles and tests on Windows but never runs `tauri build`, so the
+# whole bundler stage — NSIS packaging, the icon set, the bundled fonts under
+# `resources`, bindgen against a release profile — used to be exercised for the
+# first time by a `v*` tag, where a failure means deleting the tag and its draft
+# release before trying again. This runs release.yml's build steps minus the
+# upload, so the bundler can be proven before tagging.
+#
+# Keep the build steps byte-identical to release.yml's, including NO_STRIP and
+# the per-OS `--features` choice; a dry run that builds differently proves
+# nothing. The rust-cache `shared-key` matches release.yml's on purpose: a green
+# dry run leaves behind the cache the tag build restores.
+#
+# Both legs run, with no input to pick between them: they run in parallel, so
+# covering Linux too costs no wall-clock time, and it keeps this workflow a
+# faithful copy of release.yml rather than a subset that drifts.
+name: bundle-dryrun
+on: workflow_dispatch
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bundles: appimage
+            glob: "*.AppImage"
+          - os: windows-latest
+            bundles: nsis
+            glob: "*.exe"
+    runs-on: ${{ matrix.os }}
+    # See ci.yml: ggml defaults GGML_NATIVE to ON and would bake the build
+    # runner's instruction set into the binary, which SIGILLs on an older CPU.
+    env:
+      GGML_NATIVE: "OFF"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-ggml-portable
+          shared-key: release-bundle
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libvulkan-dev glslc
+
+      - name: Verify Windows build tools
+        if: matrix.os == 'windows-latest'
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --version
+          if (-not $?) { throw "cmake not found on windows-latest runner" }
+          if (-not $env:LIBCLANG_PATH) { echo "LIBCLANG_PATH unset; bindgen may need it" }
+        shell: pwsh
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      # NO_STRIP=1: linuxdeploy's vendored strip predates SHT_RELR, see release.yml.
+      - name: Build the installer (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: app
+        env:
+          NO_STRIP: "1"
+        run: npx tauri build --bundles ${{ matrix.bundles }} --features vulkan
+
+      # No `--features vulkan`: whisper.cpp cannot register the Vulkan backend on
+      # Windows MSVC static builds. See release.yml.
+      - name: Build the installer (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: app
+        run: npx tauri build --bundles ${{ matrix.bundles }}
+
+      # The point of the dry run is a file you can actually install and launch,
+      # so the artifact is kept. `if-no-files-found: error` mirrors release.yml's
+      # `fail_on_unmatched_files`: a moved bundle path must fail here, loudly,
+      # rather than passing with nothing attached.
+      - name: Upload the installer for manual testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcriba-${{ matrix.bundles }}
+          path: target/release/bundle/${{ matrix.bundles }}/${{ matrix.glob }}
+          if-no-files-found: error
+          retention-days: 7
