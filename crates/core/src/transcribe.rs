@@ -532,11 +532,33 @@ mod tests {
     fn tiny_model_opts() -> Option<Options> {
         // Integration tests use ggml-tiny (75MB), never the 574MB production model:
         // this exercises plumbing, not accuracy.
-        let path = std::env::var_os("TRANSCRIBA_TEST_MODEL")?;
+        //
+        // A fresh clone has no model, so returning None skips the whisper tests
+        // rather than failing them. That skip is invisible, which makes it
+        // dangerous in CI: a typo in the workflow's TRANSCRIBA_TEST_MODEL would
+        // no-op every test below and still report green, having exercised none
+        // of the pipeline. So the two ways of getting there by mistake — unset
+        // under CI, or set to something that is not a file — are hard failures.
+        let path = match std::env::var_os("TRANSCRIBA_TEST_MODEL") {
+            Some(path) => std::path::PathBuf::from(path),
+            None => {
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "TRANSCRIBA_TEST_MODEL is unset while CI is set: the whisper \
+                     integration tests would skip silently. Check the workflow."
+                );
+                return None;
+            }
+        };
+        assert!(
+            path.is_file(),
+            "TRANSCRIBA_TEST_MODEL points at {}, which is not a file",
+            path.display()
+        );
         Some(Options {
             language: "pt".into(),
             threads: 2,
-            model_path: std::path::PathBuf::from(path),
+            model_path: path,
         })
     }
 
