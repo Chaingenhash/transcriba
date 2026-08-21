@@ -148,12 +148,18 @@ jobs:
           function Measure-Build($label, $exe) {
             # One warm-up-free timed run each. The model load is included in
             # both and is identical work, so it cancels out of the ratio.
+            #
+            # Write-Host, not echo: a PowerShell function returns everything it
+            # emits to the output stream, so an `echo` here made the caller
+            # receive Object[] of (message, seconds) and the ratio blew up with
+            # "[System.Object[]] does not contain a method named op_Division"
+            # after both 7-minute transcriptions had already run.
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
             & $exe bench.wav --lang en --threads $env:BENCH_THREADS | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "$label run failed with exit code $LASTEXITCODE" }
             $sw.Stop()
             $secs = [math]::Round($sw.Elapsed.TotalSeconds, 1)
-            echo "$label`: $secs s"
+            Write-Host "$label`: $secs s"
             return $secs
           }
           $msvc  = Measure-Build "MSVC"     "target-msvc\release\transcriba.exe"
