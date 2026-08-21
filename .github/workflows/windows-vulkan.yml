@@ -42,11 +42,15 @@ jobs:
 
       # whisper.cpp's Vulkan backend needs the loader and headers to link, and
       # glslc to compile its shaders at build time. Neither is on the runner.
+      # This action installs the official LunarG SDK, which bundles glslc;
+      # humbletim/setup-vulkan-sdk builds glslang from source and ships
+      # glslangValidator instead, which is not the binary whisper.cpp looks for.
       - name: Install the Vulkan SDK
-        uses: humbletim/install-vulkan-sdk@v1.2.1
+        uses: jakoch/install-vulkan-sdk-action@v1.6.0
         with:
-          version: latest
+          install_runtime: true
           cache: true
+          stripdown: true
 
       - name: Report the SDK location
         run: |
