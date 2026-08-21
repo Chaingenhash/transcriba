@@ -1,0 +1,84 @@
+# Builds a Vulkan-enabled Windows installer on demand, to retest an assumption.
+#
+# The Windows build ships CPU-only on the belief that whisper.cpp cannot
+# register the Vulkan backend on MSVC static builds — a static-init race in
+# ggml_vk_instance_init. That belief predates this repo's current whisper-rs
+# version and was never retested against a build in hand, so it is checked here
+# rather than carried forward on faith.
+#
+# Why it matters more than the CUDA build: CUDA only helps NVIDIA desktops,
+# while the machines this tool was written for are laptops with Intel
+# integrated graphics. Vulkan is the only path that covers Intel, AMD and
+# NVIDIA at once. On Linux the same iGPU-class hardware measured 3.9x faster
+# than its own CPU (110s vs 431s for a five-minute clip), which against the
+# ~4 hours per hour of audio the Windows CPU build takes would be the
+# difference between an afternoon and a coffee break.
+#
+# CI cannot judge whether this works: GitHub runners have no GPU, so the build
+# succeeding proves only that it compiles and links. The real test is
+# installing the artifact and reading the document header — `GPU (Vulkan0)`
+# means the backend initialized, `CPU (N threads)` means it silently fell back
+# and the original assumption still holds.
+name: windows-vulkan
+on: workflow_dispatch
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    env:
+      GGML_NATIVE: "OFF"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      # Its own cache: these artifacts link against the Vulkan loader and must
+      # never be restored into a CPU or CUDA build.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-ggml-portable
+          shared-key: windows-vulkan
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # whisper.cpp's Vulkan backend needs the loader and headers to link, and
+      # glslc to compile its shaders at build time. Neither is on the runner.
+      - name: Install the Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2.1
+        with:
+          version: latest
+          cache: true
+
+      - name: Report the SDK location
+        run: |
+          echo "VULKAN_SDK=$env:VULKAN_SDK"
+          & "$env:VULKAN_SDK\Bin\glslc.exe" --version
+        shell: pwsh
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Build the Vulkan installer
+        working-directory: app
+        run: npx tauri build --bundles nsis --features vulkan
+
+      # Renamed for the same reason as the CUDA build: tauri gives every variant
+      # the same filename, and three indistinguishable installers is a support
+      # problem waiting to happen.
+      - name: Mark the installer as the Vulkan build
+        working-directory: target/release/bundle/nsis
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Get-ChildItem *.exe | Select-Object -First 1
+          if (-not $exe) { throw "no installer found to rename" }
+          Rename-Item $exe.FullName ($exe.Name -replace '-setup\.exe$', '-vulkan-setup.exe')
+          Get-ChildItem *.exe | ForEach-Object { echo $_.Name }
+        shell: pwsh
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcriba-nsis-vulkan
+          path: target/release/bundle/nsis/*-vulkan-setup.exe
+          if-no-files-found: error
+          retention-days: 14
