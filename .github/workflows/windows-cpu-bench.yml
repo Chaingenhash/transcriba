@@ -51,11 +51,40 @@ jobs:
             -OutFile model/ggml-large-v3-turbo-q5_0.bin
         shell: pwsh
 
-      # Pink noise, not silence: the pipeline rejects silent input outright, and
-      # noise still drives a full encoder pass over every 30-second window,
-      # which is where the bulk of the compute is for this model.
+      # Synthesized speech, via the Windows speech API. ffmpeg is not on this
+      # runner image, and noise would have been the wrong input anyway: the
+      # pipeline returns NoSpeech when a run produces no cues, so a clip whisper
+      # finds nothing in could fail the benchmark instead of timing it. Real
+      # speech also exercises the decoder rather than the encoder alone.
+      #
+      # The paragraph is repeated to reach roughly BENCH_SECONDS; the exact
+      # duration is read back from the WAV header afterwards, since synthesis
+      # speed is not something to assume.
       - name: Generate the benchmark clip
-        run: ffmpeg -hide_banner -loglevel error -f lavfi -i "anoisesrc=d=$env:BENCH_SECONDS`:c=pink" -ar 16000 -ac 1 bench.wav
+        run: |
+          $ErrorActionPreference = "Stop"
+          Add-Type -AssemblyName System.Speech
+          $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $synth.SetOutputToWaveFile("bench.wav")
+          $para = "The quarterly review covered three separate topics. " +
+                  "First, the migration schedule, which slipped by two weeks " +
+                  "after the storage vendor delayed delivery. Second, the " +
+                  "hiring plan, still waiting on budget approval from finance. " +
+                  "Third, and most urgently, the backup restore test that " +
+                  "nobody has run since March."
+          # ~40 seconds of speech per repetition at the default rate.
+          $reps = [math]::Max(1, [int]([int]$env:BENCH_SECONDS / 40))
+          1..$reps | ForEach-Object { $synth.Speak($para) }
+          $synth.Dispose()
+
+          # Duration straight from the RIFF header: byte 40 holds the data
+          # chunk size, byte 28 the average bytes per second.
+          $bytes = [System.IO.File]::ReadAllBytes("bench.wav")
+          $dataBytes = [System.BitConverter]::ToUInt32($bytes, 40)
+          $byteRate  = [System.BitConverter]::ToUInt32($bytes, 28)
+          $duration  = [math]::Round($dataBytes / $byteRate, 1)
+          echo "bench.wav: $duration s"
+          echo "BENCH_AUDIO_SECONDS=$duration" >> $env:GITHUB_ENV
         shell: pwsh
 
       - name: Build with MSVC
@@ -91,11 +120,11 @@ jobs:
           $clang = Measure-Build "clang-cl" "target-clang\release\transcriba.exe"
 
           $ratio = [math]::Round($msvc / $clang, 2)
-          $audio = [double]$env:BENCH_SECONDS
+          $audio = [double]$env:BENCH_AUDIO_SECONDS
           $summary = @(
             "## Windows CPU codegen benchmark",
             "",
-            "$($audio / 60) minutes of audio, $env:BENCH_THREADS threads, large-v3-turbo-q5_0.",
+            "$([math]::Round($audio / 60, 1)) minutes of speech, $env:BENCH_THREADS threads, large-v3-turbo-q5_0.",
             "",
             "| build | wall clock | vs realtime |",
             "|---|---|---|",
