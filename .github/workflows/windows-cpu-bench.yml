@@ -114,9 +114,17 @@ jobs:
           echo "BENCH_AUDIO_SECONDS=$duration" >> $env:GITHUB_ENV
         shell: pwsh
 
+      # /EHsc on both builds, and it has to be both. The cmake crate replaces
+      # CMAKE_CXX_FLAGS wholesale, which drops the /EHsc that CMake's MSVC
+      # defaults would otherwise supply. cl.exe merely warns about compiling
+      # `try` with exceptions disabled; clang-cl rejects it outright
+      # ("cannot use 'try' with exceptions disabled", ggml/src/gguf.cpp).
+      # Setting it only on the clang build would fix the error and quietly make
+      # the two builds incomparable.
       - name: Build with MSVC
         env:
           CMAKE_GENERATOR: Ninja
+          CXXFLAGS: /EHsc
         run: cargo build --release -p transcriba-cli --locked --target-dir target-msvc
 
       # clang-cl is MSVC-ABI compatible, so the Rust link step is unchanged and
@@ -129,6 +137,7 @@ jobs:
           CMAKE_GENERATOR: Ninja
           CMAKE_C_COMPILER: clang-cl
           CMAKE_CXX_COMPILER: clang-cl
+          CXXFLAGS: /EHsc
         run: cargo build --release -p transcriba-cli --locked --target-dir target-clang
 
       - name: Time both builds
