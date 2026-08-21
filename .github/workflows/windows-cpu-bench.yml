@@ -32,6 +32,22 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
 
+      # Both builds use Ninja rather than the Visual Studio generator, which is
+      # what makes this a controlled comparison: the generator, the flags and
+      # every cmake variable stay fixed, and the C/C++ compiler is the only
+      # thing that changes between the two runs.
+      #
+      # The Visual Studio generator cannot express this cleanly. Setting
+      # CMAKE_GENERATOR_TOOLSET as an environment variable is ignored outright
+      # ("because CMAKE_GENERATOR is not set"), and forwarding it as a cache
+      # define collides with the `-T host=x64` the cmake crate always passes:
+      # "generator toolset: host=x64 does not match the toolset used
+      # previously: ClangCL" (run 32472538177).
+      - uses: seanmiddleditch/gha-setup-ninja@v6
+      # Puts cl.exe, clang-cl.exe and the Windows SDK headers on PATH. The VS
+      # generator finds those itself; Ninja does not.
+      - uses: ilammy/msvc-dev-cmd@v1
+
       # The real q5_0 production model, not ggml-tiny: the whole hypothesis is
       # about codegen for quantized kernels, and tiny is f16, so it would
       # measure the wrong thing.
@@ -77,27 +93,42 @@ jobs:
           1..$reps | ForEach-Object { $synth.Speak($para) }
           $synth.Dispose()
 
-          # Duration straight from the RIFF header: byte 40 holds the data
-          # chunk size, byte 28 the average bytes per second.
+          # Walk the RIFF chunks rather than reading fixed offsets. The
+          # synthesizer emits a `fact` chunk between `fmt ` and `data`, so
+          # byte 40 is not the data size — assuming it reported a 5-minute clip
+          # as 22 hours.
           $bytes = [System.IO.File]::ReadAllBytes("bench.wav")
-          $dataBytes = [System.BitConverter]::ToUInt32($bytes, 40)
-          $byteRate  = [System.BitConverter]::ToUInt32($bytes, 28)
-          $duration  = [math]::Round($dataBytes / $byteRate, 1)
+          $pos = 12   # past "RIFF" + size + "WAVE"
+          $byteRate = 0; $dataBytes = 0
+          while ($pos + 8 -le $bytes.Length) {
+            $id   = [System.Text.Encoding]::ASCII.GetString($bytes, $pos, 4)
+            $size = [System.BitConverter]::ToUInt32($bytes, $pos + 4)
+            if ($id -eq "fmt ") { $byteRate  = [System.BitConverter]::ToUInt32($bytes, $pos + 16) }
+            if ($id -eq "data") { $dataBytes = $size; break }
+            $pos += 8 + $size + ($size % 2)   # chunks are word-aligned
+          }
+          if ($byteRate -eq 0 -or $dataBytes -eq 0) { throw "could not read fmt/data chunks from bench.wav" }
+          $duration = [math]::Round($dataBytes / $byteRate, 1)
+          if ($duration -lt 30) { throw "benchmark clip is only $duration s; synthesis produced too little audio" }
           echo "bench.wav: $duration s"
           echo "BENCH_AUDIO_SECONDS=$duration" >> $env:GITHUB_ENV
         shell: pwsh
 
       - name: Build with MSVC
+        env:
+          CMAKE_GENERATOR: Ninja
         run: cargo build --release -p transcriba-cli --locked --target-dir target-msvc
 
-      # -T ClangCL selects the LLVM toolset inside the Visual Studio generator,
-      # so the MSVC ABI, the Rust link step and every other cmake flag stay
-      # identical — the C/C++ compiler is the only variable. whisper-rs-sys
-      # forwards any CMAKE_* environment variable to cmake, which is what makes
-      # this reachable without patching the crate.
+      # clang-cl is MSVC-ABI compatible, so the Rust link step is unchanged and
+      # ggml still takes its `if (MSVC)` cmake branch — same /arch:AVX2, same
+      # defines. whisper-rs-sys forwards any CMAKE_* environment variable to
+      # cmake, which is what makes the compiler swap reachable without patching
+      # the crate.
       - name: Build with clang-cl
         env:
-          CMAKE_GENERATOR_TOOLSET: ClangCL
+          CMAKE_GENERATOR: Ninja
+          CMAKE_C_COMPILER: clang-cl
+          CMAKE_CXX_COMPILER: clang-cl
         run: cargo build --release -p transcriba-cli --locked --target-dir target-clang
 
       - name: Time both builds
