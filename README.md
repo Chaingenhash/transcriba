@@ -31,10 +31,15 @@ nothing leaves your machine.
 3. Pick the spoken language, or leave it on auto-detect.
 4. Wait. How long depends on whether your machine has a usable GPU:
 
-   | | Roughly, per hour of audio |
+   | | Per hour of audio |
    |---|---|
+   | Windows, CUDA build, RTX 3080 Ti | **~1 minute** |
    | Linux with a working GPU | **6–7 minutes** |
-   | Anything on CPU | **25 minutes** |
+   | Windows on CPU, Ryzen 7 9700X | **~4 hours** |
+
+   The CPU figure is not a typo, and it is why the CUDA note below exists. CPU speed
+   varies enormously with the machine; treat that row as "plan for hours", not as a
+   number to predict from.
 
    The Linux build uses your GPU when it can and falls back to CPU when it can't; the
    Windows build is CPU-only. Either way the finished document's header says which one

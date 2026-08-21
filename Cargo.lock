@@ -5097,7 +5097,7 @@ dependencies = [
 
 [[package]]
 name = "transcriba-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5109,7 +5109,7 @@ dependencies = [
 
 [[package]]
 name = "transcriba-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "transcriba-core",
@@ -5117,7 +5117,7 @@ dependencies = [
 
 [[package]]
 name = "transcriba-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs",
  "docx-rs",
