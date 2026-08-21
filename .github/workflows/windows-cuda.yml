@@ -15,7 +15,14 @@ on: workflow_dispatch
 
 jobs:
   bundle:
-    runs-on: windows-latest
+    # Pinned to the VS 2022 image, NOT windows-latest. windows-latest is now
+    # VS 2026, and cmake picks the "Visual Studio 18 2026" generator there,
+    # which needs MSBuild CUDA toolset files that the CUDA 12.6 installer does
+    # not ship — it integrates with VS 2019/2022 only. nvcc installs fine and
+    # then `enable_language(CUDA)` fails with "No CUDA toolset found" (run
+    # 32462098797). Raising the toolkit version is the way off this pin; until
+    # then the older image is what matches.
+    runs-on: windows-2022
     env:
       GGML_NATIVE: "OFF"
     steps:
