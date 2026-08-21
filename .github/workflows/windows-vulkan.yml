@@ -27,6 +27,16 @@ jobs:
     runs-on: windows-latest
     env:
       GGML_NATIVE: "OFF"
+      # Short target directory, and not optional. ggml's Vulkan backend builds
+      # its shader generator as a nested ExternalProject, whose paths nest
+      # `vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build/CMakeFiles/
+      # CMakeScratch/TryCompile-*/cmTC_*.dir/Debug/cmTC_*.tlog/` under the crate
+      # output dir. From the default D:\a\transcriba\transcriba\target that
+      # exceeds Windows' 260-character MAX_PATH and MSBuild fails with
+      # "FileTracker : error FTK1011: could not create the new file tracking log
+      # file" — which reads like a compiler failure and is really a path length
+      # (run 32472037659). No other build here nests deeply enough to hit it.
+      CARGO_TARGET_DIR: D:\t
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -70,7 +80,7 @@ jobs:
       # the same filename, and three indistinguishable installers is a support
       # problem waiting to happen.
       - name: Mark the installer as the Vulkan build
-        working-directory: target/release/bundle/nsis
+        working-directory: D:\t\release\bundle\nsis
         run: |
           $ErrorActionPreference = "Stop"
           $exe = Get-ChildItem *.exe | Select-Object -First 1
@@ -83,6 +93,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: transcriba-nsis-vulkan
-          path: target/release/bundle/nsis/*-vulkan-setup.exe
+          path: D:\t\release\bundle\nsis\*-vulkan-setup.exe
           if-no-files-found: error
           retention-days: 14
