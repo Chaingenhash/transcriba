@@ -35,3 +35,15 @@ default = []
 # that, rather than assuming success from this feature flag, is the actual
 # source of truth for whether the GPU was really used.
 vulkan = ["whisper-rs/vulkan", "whisper-rs/raw-api"]
+# CUDA, for NVIDIA machines specifically. Not in any shipped installer and not
+# a replacement for `vulkan`: it needs the CUDA toolkit (nvcc) at build time and
+# only runs on NVIDIA hardware, so it buys nothing on the Intel-iGPU laptops the
+# default build targets. It exists because Windows gets no GPU at all otherwise
+# — whisper.cpp fails to register Vulkan on MSVC static builds — which leaves an
+# NVIDIA desktop transcribing a one-hour recording on CPU for hours.
+#
+# Mutually compatible with `vulkan` as far as the code is concerned: both enable
+# the same `gpu_detect` path, and the backend named in the document header is
+# whichever one whisper.cpp actually initialized. Build it with
+# .github/workflows/windows-cuda.yml, which installs the toolkit.
+cuda = ["whisper-rs/cuda", "whisper-rs/raw-api"]

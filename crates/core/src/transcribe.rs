@@ -47,8 +47,14 @@ impl std::fmt::Display for TranscribeError {
 impl std::error::Error for TranscribeError {}
 
 /// Leaves two cores free so the machine stays usable during a long job.
+///
+/// Counts physical cores, not logical ones. whisper's kernels are compute
+/// bound and saturate a core's vector units on their own, so a second
+/// hyperthread on the same core contends for hardware the first thread is
+/// already using rather than adding throughput. On an 8-core/16-thread desktop
+/// this asks for 6 threads where counting logical CPUs asked for 14.
 pub fn default_threads() -> usize {
-    num_cpus::get().saturating_sub(2).max(1)
+    num_cpus::get_physical().saturating_sub(2).max(1)
 }
 
 /// How often the polling loop checks `should_cancel` and drains progress while
@@ -119,7 +125,7 @@ pub struct Transcript {
 /// `whisper_backend_init_gpu`), not inside `WhisperContext::new_with_params`
 /// (which calls the `_no_state` C entry point). The capture below wraps both
 /// calls for that reason.
-#[cfg(feature = "vulkan")]
+#[cfg(any(feature = "vulkan", feature = "cuda"))]
 mod gpu_detect {
     use std::ffi::{c_char, c_void, CStr};
     use std::sync::Mutex;
@@ -253,6 +259,16 @@ mod gpu_detect {
         }
 
         #[test]
+        fn parses_the_success_line_for_any_backend() {
+            // Same line, whichever backend won: the parser keys off the shape,
+            // not the device vocabulary, so a CUDA build needs no second path.
+            assert_eq!(
+                parse_gpu_device_name("whisper_backend_init_gpu: using CUDA0 backend\n"),
+                Some("CUDA0".to_string())
+            );
+        }
+
+        #[test]
         fn does_not_match_the_fallback_line() {
             assert_eq!(
                 parse_gpu_device_name("whisper_backend_init_gpu: no GPU found\n"),
@@ -289,19 +305,19 @@ pub fn transcribe(
         return Err(TranscribeError::Cancelled);
     }
 
-    // With the `vulkan` feature disabled, `use_gpu` is `false` by construction
+    // With both GPU features disabled, `use_gpu` is `false` by construction
     // (see `WhisperContextParameters::default`), so no GPU init is even
     // attempted and `Backend::Cpu` below is correct without any detection —
     // no log capture runs on this path.
-    #[cfg(feature = "vulkan")]
+    #[cfg(any(feature = "vulkan", feature = "cuda"))]
     let mut detected_gpu: Option<String> = None;
 
-    #[cfg(feature = "vulkan")]
+    #[cfg(any(feature = "vulkan", feature = "cuda"))]
     let ctx = gpu_detect::observe(&mut detected_gpu, || {
         WhisperContext::new_with_params(&opts.model_path, WhisperContextParameters::default())
     })
     .map_err(|e| TranscribeError::Model(e.to_string()))?;
-    #[cfg(not(feature = "vulkan"))]
+    #[cfg(not(any(feature = "vulkan", feature = "cuda")))]
     let ctx =
         WhisperContext::new_with_params(&opts.model_path, WhisperContextParameters::default())
             .map_err(|e| TranscribeError::Model(e.to_string()))?;
@@ -309,10 +325,10 @@ pub fn transcribe(
     // Backend init (`whisper_backend_init_gpu`) happens lazily in here, not
     // in `new_with_params` above — see the `gpu_detect` module doc for why
     // both calls are wrapped.
-    #[cfg(feature = "vulkan")]
+    #[cfg(any(feature = "vulkan", feature = "cuda"))]
     let mut state = gpu_detect::observe(&mut detected_gpu, || ctx.create_state())
         .map_err(|e| TranscribeError::Model(e.to_string()))?;
-    #[cfg(not(feature = "vulkan"))]
+    #[cfg(not(any(feature = "vulkan", feature = "cuda")))]
     let mut state = ctx
         .create_state()
         .map_err(|e| TranscribeError::Model(e.to_string()))?;
@@ -457,17 +473,17 @@ pub fn transcribe(
     }
 
     // Reported from what was actually observed, never assumed from the
-    // feature flag: without `vulkan`, GPU init was never attempted, so CPU is
-    // correct by construction; with it, CPU is still the answer unless
-    // whisper.cpp's own log line named a device.
-    #[cfg(feature = "vulkan")]
+    // feature flag: with neither `vulkan` nor `cuda`, GPU init was never
+    // attempted, so CPU is correct by construction; with either, CPU is still
+    // the answer unless whisper.cpp's own log line named a device.
+    #[cfg(any(feature = "vulkan", feature = "cuda"))]
     let backend = match detected_gpu {
         Some(name) => Backend::Gpu { name },
         None => Backend::Cpu {
             threads: opts.threads,
         },
     };
-    #[cfg(not(feature = "vulkan"))]
+    #[cfg(not(any(feature = "vulkan", feature = "cuda")))]
     let backend = Backend::Cpu {
         threads: opts.threads,
     };
@@ -566,7 +582,18 @@ mod tests {
     fn default_threads_leaves_headroom_and_is_at_least_one() {
         let t = default_threads();
         assert!(t >= 1);
-        assert!(t <= num_cpus::get().saturating_sub(2).max(1));
+        assert!(t <= num_cpus::get_physical().saturating_sub(2).max(1));
+    }
+
+    #[test]
+    fn default_threads_does_not_oversubscribe_physical_cores() {
+        // The regression this guards: counting logical CPUs put 14 threads on
+        // an 8-core machine, where hyperthread pairs contend for one core's
+        // vector units instead of adding throughput.
+        assert!(
+            default_threads() <= num_cpus::get_physical().max(1),
+            "asked for more threads than the machine has physical cores"
+        );
     }
 
     #[test]
@@ -661,7 +688,7 @@ mod tests {
     // no GPU init is ever attempted here, so `Backend::Cpu` must be the only
     // possible outcome, and a future change that started mislabeling CPU
     // runs as GPU (or vice versa) would fail it.
-    #[cfg(not(feature = "vulkan"))]
+    #[cfg(not(any(feature = "vulkan", feature = "cuda")))]
     #[test]
     fn transcript_reports_the_cpu_backend_it_ran_on() {
         let Some(opts) = tiny_model_opts() else {
@@ -692,7 +719,7 @@ mod tests {
     // device (asserted indirectly here; the direct guard is `gpu_detect`'s
     // own unit tests, which check the parser can't produce a name from
     // nothing).
-    #[cfg(feature = "vulkan")]
+    #[cfg(any(feature = "vulkan", feature = "cuda"))]
     #[test]
     fn transcript_reports_a_backend_it_actually_observed() {
         let Some(opts) = tiny_model_opts() else {

@@ -40,6 +40,13 @@ nothing leaves your machine.
    Windows build is CPU-only. Either way the finished document's header says which one
    actually ran, so you never have to guess — look for `GPU (…)` or `CPU (N threads)`.
 
+   **On a Windows machine with an NVIDIA card**, CPU-only is a painful default — hours
+   for a long recording. There is no portable GPU build for Windows (whisper.cpp fails
+   to register Vulkan on MSVC static builds), but a CUDA installer can be built on
+   demand: run the `windows-cuda` workflow from the Actions tab and download the
+   artifact it produces. That build only runs on NVIDIA hardware, which is why it is
+   not attached to releases.
+
    The progress bar moves the whole time. If it sits on a percentage for a minute or two
    that's normal, not a hang. Don't kill it.
 5. When it finishes, a `.docx` and a `.pdf` appear next to the original file (e.g.

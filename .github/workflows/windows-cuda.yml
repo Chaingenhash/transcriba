@@ -1,0 +1,73 @@
+# Builds a CUDA-enabled Windows installer on demand. Never part of a release.
+#
+# The shipped Windows installer is CPU-only: whisper.cpp fails to register the
+# Vulkan backend on MSVC static builds, so there is no portable GPU path there,
+# and the colleagues this tool was built for are on Intel-iGPU laptops that CUDA
+# would not help anyway. On an NVIDIA desktop that tradeoff is expensive — a
+# one-hour recording takes hours on CPU — so this produces a separate artifact
+# for those machines instead of complicating the mainstream build.
+#
+# It is deliberately NOT wired into release.yml. The output only runs on NVIDIA
+# hardware, so attaching it to a release would invite someone to download the
+# wrong file; the artifact is handed out directly instead.
+name: windows-cuda
+on: workflow_dispatch
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    env:
+      GGML_NATIVE: "OFF"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      # A distinct cache from release-bundle: these artifacts are compiled
+      # against the CUDA toolkit and must not be restored into a CPU build.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-ggml-portable
+          shared-key: windows-cuda
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # windows-latest has no CUDA toolkit preinstalled and whisper.cpp needs
+      # nvcc to compile the ggml-cuda backend. `method: network` fetches only
+      # the listed subpackages rather than the full ~3GB installer.
+      - name: Install the CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.24
+        id: cuda
+        with:
+          cuda: "12.6.0"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
+      - name: Report the toolkit version
+        run: |
+          echo "CUDA_PATH=$env:CUDA_PATH"
+          nvcc --version
+        shell: pwsh
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      # CMAKE_CUDA_ARCHITECTURES pins the GPU generations to generate code for
+      # instead of letting ggml guess from a build machine that has no GPU at
+      # all: 86 is Ampere (RTX 30-series), 89 Ada (40-series), 75 Turing
+      # (20-series/GTX 16). Without this, a runner with no device can emit code
+      # for the wrong architecture and the app falls back to CPU at runtime
+      # while still reporting success at build time.
+      - name: Build the CUDA installer
+        working-directory: app
+        env:
+          CMAKE_CUDA_ARCHITECTURES: "75;86;89"
+        run: npx tauri build --bundles nsis --features cuda
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcriba-nsis-cuda
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14

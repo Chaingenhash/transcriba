@@ -32,3 +32,8 @@ default = []
 # `gpu_detect` — so a silent fallback to CPU shows up in the document header
 # rather than being assumed away.
 vulkan = ["transcriba-core/vulkan"]
+# Same forwarding for CUDA, for the same reason: the Tauri CLI's `--features`
+# applies to this crate, not to core. Not part of any release; built on demand
+# by .github/workflows/windows-cuda.yml for NVIDIA machines, where the shipped
+# CPU-only Windows build is the difference between minutes and hours.
+cuda = ["transcriba-core/cuda"]
