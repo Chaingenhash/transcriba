@@ -13,7 +13,7 @@ struct Args {
     /// Language code, or "auto" to detect
     #[arg(long, default_value = "pt")]
     lang: String,
-    /// Worker threads. Defaults to CPU count minus two.
+    /// Worker threads. Defaults to physical core count minus two.
     #[arg(long)]
     threads: Option<usize>,
 }

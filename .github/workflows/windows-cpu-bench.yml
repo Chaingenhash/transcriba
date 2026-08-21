@@ -1,0 +1,110 @@
+# Times the Windows CPU build against a clang-cl build of the same code.
+#
+# The question this answers: a Ryzen 7 9700X desktop takes roughly 4 hours per
+# hour of audio on the CPU-only Windows build, while a Meteor Lake *laptop*
+# managed about 1.4 hours on Linux. The desktop should win by 2-3x, so a ~6-9x
+# discrepancy has no hardware explanation. Same model, same AVX2 baseline
+# (Meteor Lake has no AVX-512 either), all cores at 100%. The largest remaining
+# difference is the compiler: Linux builds ggml with GCC, Windows with MSVC,
+# and MSVC is widely reported to generate substantially worse code for ggml's
+# quantized kernels.
+#
+# Unlike the GPU questions, this one is settleable in CI: both builds run on
+# one runner, against one audio file, with a fixed thread count. Only the
+# compiler differs, so the ratio is the answer — no GPU and no local hardware
+# needed.
+#
+# It stays dispatch-only: it downloads the 574MB production model and runs two
+# full transcriptions, which is far too slow for every push.
+name: windows-cpu-bench
+on: workflow_dispatch
+
+jobs:
+  bench:
+    runs-on: windows-latest
+    env:
+      GGML_NATIVE: "OFF"
+      # Fixed rather than derived from the runner, so a runner with a different
+      # core count does not silently change what is being compared.
+      BENCH_THREADS: "4"
+      BENCH_SECONDS: "300"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The real q5_0 production model, not ggml-tiny: the whole hypothesis is
+      # about codegen for quantized kernels, and tiny is f16, so it would
+      # measure the wrong thing.
+      - name: Cache the production model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: model/ggml-large-v3-turbo-q5_0.bin
+          key: whisper-large-v3-turbo-q5_0
+
+      - name: Fetch the production model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path model | Out-Null
+          Invoke-WebRequest -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin?download=true" `
+            -OutFile model/ggml-large-v3-turbo-q5_0.bin
+        shell: pwsh
+
+      # Pink noise, not silence: the pipeline rejects silent input outright, and
+      # noise still drives a full encoder pass over every 30-second window,
+      # which is where the bulk of the compute is for this model.
+      - name: Generate the benchmark clip
+        run: ffmpeg -hide_banner -loglevel error -f lavfi -i "anoisesrc=d=$env:BENCH_SECONDS`:c=pink" -ar 16000 -ac 1 bench.wav
+        shell: pwsh
+
+      - name: Build with MSVC
+        run: cargo build --release -p transcriba-cli --locked --target-dir target-msvc
+
+      # -T ClangCL selects the LLVM toolset inside the Visual Studio generator,
+      # so the MSVC ABI, the Rust link step and every other cmake flag stay
+      # identical — the C/C++ compiler is the only variable. whisper-rs-sys
+      # forwards any CMAKE_* environment variable to cmake, which is what makes
+      # this reachable without patching the crate.
+      - name: Build with clang-cl
+        env:
+          CMAKE_GENERATOR_TOOLSET: ClangCL
+        run: cargo build --release -p transcriba-cli --locked --target-dir target-clang
+
+      - name: Time both builds
+        env:
+          TRANSCRIBA_MODEL_PATH: model/ggml-large-v3-turbo-q5_0.bin
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Measure-Build($label, $exe) {
+            # One warm-up-free timed run each. The model load is included in
+            # both and is identical work, so it cancels out of the ratio.
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            & $exe bench.wav --lang en --threads $env:BENCH_THREADS | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "$label run failed with exit code $LASTEXITCODE" }
+            $sw.Stop()
+            $secs = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+            echo "$label`: $secs s"
+            return $secs
+          }
+          $msvc  = Measure-Build "MSVC"     "target-msvc\release\transcriba.exe"
+          $clang = Measure-Build "clang-cl" "target-clang\release\transcriba.exe"
+
+          $ratio = [math]::Round($msvc / $clang, 2)
+          $audio = [double]$env:BENCH_SECONDS
+          $summary = @(
+            "## Windows CPU codegen benchmark",
+            "",
+            "$($audio / 60) minutes of audio, $env:BENCH_THREADS threads, large-v3-turbo-q5_0.",
+            "",
+            "| build | wall clock | vs realtime |",
+            "|---|---|---|",
+            "| MSVC (shipped) | $msvc s | $([math]::Round($msvc / $audio, 2))x |",
+            "| clang-cl | $clang s | $([math]::Round($clang / $audio, 2))x |",
+            "",
+            "**clang-cl is ${ratio}x the speed of MSVC.** Above ~1.3x is worth",
+            "switching the shipped Windows build to the LLVM toolset."
+          ) -join "`n"
+          echo $summary
+          echo $summary >> $env:GITHUB_STEP_SUMMARY
+        shell: pwsh
