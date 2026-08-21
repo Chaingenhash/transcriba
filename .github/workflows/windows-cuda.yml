@@ -1,20 +1,16 @@
 # Builds a CUDA-enabled Windows installer on demand. Never part of a release.
 #
-# The shipped Windows installer is CPU-only: whisper.cpp fails to register the
-# Vulkan backend on MSVC static builds, so there is no portable GPU path there,
-# and the colleagues this tool was built for are on Intel-iGPU laptops that CUDA
-# would not help anyway. On an NVIDIA desktop that tradeoff is expensive — a
-# one-hour recording takes hours on CPU — so this produces a separate artifact
-# for those machines instead of complicating the mainstream build.
+# The shipped Windows installer uses Vulkan, which covers Intel, AMD and NVIDIA
+# alike. CUDA is not a fallback for that — it is a speed option for NVIDIA
+# machines only. Measured on one RTX 3080 Ti: an hour of audio in 1 minute 11
+# seconds through CUDA against about 5 minutes through Vulkan, roughly 4x, on
+# top of the ~48x Vulkan already gains over CPU.
 #
 # It is deliberately kept out of release.yml's releases: the output only runs on
 # NVIDIA hardware, so sitting next to the normal installer it would invite the
 # wrong download. Pushing a `v*-cuda` tag instead publishes it as its own draft
 # prerelease, with `-cuda-` in the filename, and the installer is renamed before
 # upload because tauri names both builds `Transcriba_<version>_x64-setup.exe`.
-#
-# Measured on an RTX 3080 Ti: one hour of audio in 1 minute 11 seconds, against
-# roughly 4 hours for the same recording on the CPU-only build.
 name: windows-cuda
 on:
   workflow_dispatch:
@@ -122,8 +118,9 @@ jobs:
             from the matching non-CUDA release.
 
             Measured on an RTX 3080 Ti: one hour of audio in 1 minute 11
-            seconds, against roughly 4 hours for the same recording on the
-            CPU-only build.
+            seconds, against about 5 minutes for the same recording on the
+            standard Vulkan build, and roughly 4 hours with no GPU at all.
+            Worth installing only if those 4 minutes matter to you.
 
             The document header reports the backend that actually ran, so a
             successful GPU run says `GPU (CUDA0)`. If it says `CPU (N threads)`,

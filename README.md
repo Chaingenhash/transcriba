@@ -33,24 +33,23 @@ nothing leaves your machine.
 
    | | Per hour of audio |
    |---|---|
-   | Windows, CUDA build, RTX 3080 Ti | **~1 minute** |
-   | Linux with a working GPU | **6–7 minutes** |
-   | Windows on CPU, Ryzen 7 9700X | **~4 hours** |
+   | CUDA build, RTX 3080 Ti | **~1 minute** |
+   | Windows GPU, RTX 3080 Ti | **~5 minutes** |
+   | Linux GPU | **6–7 minutes** |
+   | No usable GPU, Ryzen 7 9700X | **~4 hours** |
 
-   The CPU figure is not a typo, and it is why the CUDA note below exists. CPU speed
-   varies enormously with the machine; treat that row as "plan for hours", not as a
-   number to predict from.
+   Both builds use your GPU when they can and fall back to CPU when they can't. The
+   finished document's header says which one actually ran, so you never have to guess —
+   look for `GPU (…)` or `CPU (N threads)`.
 
-   The Linux build uses your GPU when it can and falls back to CPU when it can't; the
-   Windows build is CPU-only. Either way the finished document's header says which one
-   actually ran, so you never have to guess — look for `GPU (…)` or `CPU (N threads)`.
+   That last row is not a typo. If the header says `CPU`, your machine has no GPU the
+   app could use, and a long recording really will take hours. CPU speed varies
+   enormously between machines; treat it as "plan for hours", not as a prediction.
 
-   **On a Windows machine with an NVIDIA card**, CPU-only is a painful default — hours
-   for a long recording. There is no portable GPU build for Windows (whisper.cpp fails
-   to register Vulkan on MSVC static builds), but a CUDA installer can be built on
-   demand: run the `windows-cuda` workflow from the Actions tab and download the
-   artifact it produces. That build only runs on NVIDIA hardware, which is why it is
-   not attached to releases.
+   **On a Windows machine with an NVIDIA card**, a CUDA build is roughly four times
+   faster again than the standard GPU build. It is not attached to releases, because it
+   will not run on anything but NVIDIA hardware: look for the newest `-cuda` prerelease,
+   or run the `windows-cuda` workflow from the Actions tab.
 
    The progress bar moves the whole time. If it sits on a percentage for a minute or two
    that's normal, not a hang. Don't kill it.

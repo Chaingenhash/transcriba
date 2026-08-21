@@ -97,11 +97,12 @@ jobs:
         env:
           TRANSCRIBA_TEST_MODEL: ${{ github.workspace }}/tests/fixtures/ggml-tiny.bin
 
-      # Linux releases ship with `--features vulkan`, so the gpu_detect module and
+      # Every release now ships `--features vulkan`, so the gpu_detect module and
       # its unit tests must compile and pass somewhere. Without this they are
-      # invisible to CI and can rot until a release build fails. Not run on Windows:
-      # whisper.cpp cannot register the Vulkan backend there, so releases are
-      # CPU-only and the feature is never built for it.
+      # invisible to CI and can rot until a release build fails. Linux-only for
+      # cost, not correctness: apt supplies the loader and glslc in seconds,
+      # where Windows needs the LunarG SDK installed on every run. The Windows
+      # release build is the backstop for that leg.
       - name: Check the vulkan feature (Linux only)
         if: matrix.os == 'ubuntu-latest'
         run: |

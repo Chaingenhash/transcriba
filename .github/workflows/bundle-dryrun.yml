@@ -26,10 +26,12 @@ jobs:
         include:
           - os: ubuntu-latest
             bundles: appimage
-            glob: "*.AppImage"
+            out: target/release/bundle/appimage/*.AppImage
           - os: windows-latest
             bundles: nsis
-            glob: "*.exe"
+            # Not under target/: the Windows leg redirects CARGO_TARGET_DIR to
+            # stay inside Windows' MAX_PATH while ggml builds its Vulkan shaders.
+            out: D:\t\release\bundle\nsis\*.exe
     runs-on: ${{ matrix.os }}
     # See ci.yml: ggml defaults GGML_NATIVE to ON and would bake the build
     # runner's instruction set into the binary, which SIGILLs on an older CPU.
@@ -63,6 +65,15 @@ jobs:
           if (-not $env:LIBCLANG_PATH) { echo "LIBCLANG_PATH unset; bindgen may need it" }
         shell: pwsh
 
+      # Windows needs the loader, headers and glslc that apt provides on Linux.
+      - name: Install the Vulkan SDK (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: jakoch/install-vulkan-sdk-action@v1.6.0
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
+
       - name: Install frontend dependencies
         working-directory: app
         run: npm ci
@@ -75,12 +86,16 @@ jobs:
           NO_STRIP: "1"
         run: npx tauri build --bundles ${{ matrix.bundles }} --features vulkan
 
-      # No `--features vulkan`: whisper.cpp cannot register the Vulkan backend on
-      # Windows MSVC static builds. See release.yml.
+      # Vulkan here too, matching release.yml since 2026-08-21. The Windows
+      # build was CPU-only before that on a premise that turned out to be
+      # false — see release.yml — and CARGO_TARGET_DIR is what keeps ggml's
+      # nested shader-generator paths under Windows' MAX_PATH.
       - name: Build the installer (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: app
-        run: npx tauri build --bundles ${{ matrix.bundles }}
+        env:
+          CARGO_TARGET_DIR: D:\t
+        run: npx tauri build --bundles ${{ matrix.bundles }} --features vulkan
 
       # The point of the dry run is a file you can actually install and launch,
       # so the artifact is kept. `if-no-files-found: error` mirrors release.yml's
@@ -90,6 +105,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: transcriba-${{ matrix.bundles }}
-          path: target/release/bundle/${{ matrix.bundles }}/${{ matrix.glob }}
+          path: ${{ matrix.out }}
           if-no-files-found: error
           retention-days: 7

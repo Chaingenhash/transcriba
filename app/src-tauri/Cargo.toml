@@ -22,10 +22,15 @@ default = []
 # Forwards core's opportunistic Vulkan so `tauri build --features vulkan`
 # reaches it — the CLI's `--features` applies to this crate, not to core.
 #
-# Enabled for Linux releases only. Measured 2026-08-13 on Intel Meteor Lake
-# (Mesa): 110s vs 431s for a 5-minute clip, a 3.9x speedup, with transcripts
-# matching to within one word. Windows stays CPU-only because whisper.cpp
-# silently fails to register the Vulkan backend on MSVC static builds.
+# Enabled for every release since 2026-08-21. Measured 2026-08-13 on Intel
+# Meteor Lake (Mesa): 110s vs 431s for a 5-minute clip, a 3.9x speedup, with
+# transcripts matching to within one word. On Windows with an RTX 3080 Ti:
+# one hour of audio in about 5 minutes, against roughly 4 hours CPU-only.
+#
+# Windows shipped CPU-only until then, on the belief that whisper.cpp could not
+# register the backend on MSVC static builds. That was wrong: the build failed
+# on Windows' MAX_PATH, not on any static-init race, and once it built the
+# backend initialized and reported `GPU (Vulkan0)`.
 #
 # Build requirements: `libvulkan-dev` and `glslc` (shader compiler).
 # The reported backend always reflects what actually ran — see core's

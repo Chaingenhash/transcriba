@@ -73,6 +73,16 @@ jobs:
           if (-not $env:LIBCLANG_PATH) { echo "LIBCLANG_PATH unset; bindgen may need it" }
         shell: pwsh
 
+      # Windows needs the same loader/headers and glslc that apt provides on
+      # Linux. The runner has neither.
+      - name: Install the Vulkan SDK (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: jakoch/install-vulkan-sdk-action@v1.6.0
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
+
       - name: Install frontend dependencies
         working-directory: app
         run: npm ci
@@ -100,12 +110,23 @@ jobs:
       - name: Build the installer (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: app
-        # No `--features vulkan` here: whisper.cpp silently fails to register
-        # the Vulkan backend on Windows MSVC static builds (a static-init race
-        # in ggml_vk_instance_init), so it would ship the build-time cost and
-        # the GPU code path while always falling back to CPU. Revisit if that
-        # upstream bug is fixed.
-        run: npx tauri build --bundles ${{ matrix.bundles }}
+        # Windows shipped CPU-only until 2026-08-21, on the belief that
+        # whisper.cpp could not register the Vulkan backend on MSVC static
+        # builds (a static-init race in ggml_vk_instance_init). Retesting it
+        # disproved that: the build only ever failed on Windows' MAX_PATH via
+        # MSBuild's FileTracker, and the resulting installer initialized Vulkan
+        # and reported `GPU (Vulkan0)` on real hardware. Measured on an RTX
+        # 3080 Ti: one hour of audio in about 5 minutes, against roughly 4 hours
+        # CPU-only. CUDA is still ~4x faster again, which is what
+        # windows-cuda.yml is for, but Vulkan is the one build that covers the
+        # Intel-iGPU laptops this tool was written for.
+        #
+        # CARGO_TARGET_DIR is what keeps that MAX_PATH failure away: ggml builds
+        # its shader generator as a nested ExternalProject whose try-compile
+        # paths overflow 260 characters from the default target directory.
+        env:
+          CARGO_TARGET_DIR: D:\t
+        run: npx tauri build --bundles ${{ matrix.bundles }} --features vulkan
 
       # `app/src-tauri` is a workspace member, so cargo (and tauri, which shells out to
       # it) writes to the *workspace root's* target directory, not `app/src-tauri/target`
@@ -122,10 +143,12 @@ jobs:
           fail_on_unmatched_files: true
           draft: true
 
+      # D:\t, not target/: the Windows build redirects CARGO_TARGET_DIR to stay
+      # under MAX_PATH, and tauri writes the bundle wherever cargo points.
       - name: Attach the Windows installer to the release
         if: matrix.os == 'windows-latest'
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/bundle/nsis/*.exe
+          files: D:\t\release\bundle\nsis\*.exe
           fail_on_unmatched_files: true
           draft: true
