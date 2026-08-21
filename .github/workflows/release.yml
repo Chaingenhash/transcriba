@@ -14,6 +14,12 @@ permissions:
 
 jobs:
   bundle:
+    # `v*` also matches `v0.1.1-cuda`, the tag that publishes the NVIDIA-only
+    # build through windows-cuda.yml. Without this guard that tag would fire
+    # both workflows and race two different installers into two releases. GitHub
+    # offers no negative tag filter, so the exclusion lives here — job-level `if`
+    # can read `github`, which is all this needs.
+    if: ${{ !endsWith(github.ref, '-cuda') }}
     strategy:
       fail-fast: false
       matrix:
